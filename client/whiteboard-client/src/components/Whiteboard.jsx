@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 import DrawingCanvas from './DrawingCanvas';
 import Toolbar from './Toolbar';
 import UserCursors from './UserCursors';
-import toast, { Toaster } from 'react-hot-toast'; // ✅ npm install react-hot-toast
+import toast, { Toaster } from 'react-hot-toast';
 
 function Whiteboard() {
   const { roomId } = useParams();
@@ -15,7 +15,7 @@ function Whiteboard() {
   const socketRef = useRef(null);
 
   useEffect(() => {
-    const socket = io('http://localhost:5000', {
+    const socket = io('https://whiteboardapptask.onrender.com', {
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -65,14 +65,12 @@ function Whiteboard() {
           padding: '10px',
           background: '#f2f2f2',
           display: 'flex',
-          flexDirection: 'column',
-          gap: '8px',
-          justifyContent: 'center',
+          flexDirection: 'row',
+          justifyContent: 'space-between',
           alignItems: 'center',
-          textAlign: 'center',
-
-          // Responsive for tablets and desktops
           flexWrap: 'wrap',
+          gap: '10px',
+          textAlign: 'center',
         }}
       >
         <div style={{ fontSize: '16px' }}>

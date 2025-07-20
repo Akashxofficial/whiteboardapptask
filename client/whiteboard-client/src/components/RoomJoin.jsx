@@ -14,8 +14,10 @@ function RoomJoin() {
     }
 
     try {
-      // 🔧 Backend will create the room if it doesn't exist
-      await axios.post('http://localhost:5000/api/rooms/join', { roomId: code });
+      // ✅ Call Render-deployed backend
+      await axios.post('https://whiteboardapptask.onrender.com/api/rooms/join', {
+        roomId: code,
+      });
 
       // ✅ Navigate to the whiteboard room
       navigate(`/room/${code}`);
