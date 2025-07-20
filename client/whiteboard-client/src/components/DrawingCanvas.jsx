@@ -5,17 +5,20 @@ function DrawingCanvas({ socket, tool, roomId }) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [lastPos, setLastPos] = useState(null);
 
+  // 🖌️ Resize canvas and setup listeners
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight - 150; // leave room for toolbar
+      canvas.height = window.innerHeight - 150; // for toolbar
     };
+
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
+    // Line drawing logic
     const drawLine = ({ x0, y0, x1, y1, color, width }) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
@@ -26,6 +29,7 @@ function DrawingCanvas({ socket, tool, roomId }) {
       ctx.stroke();
     };
 
+    // 📡 Socket listeners
     socket.on('draw-start', ({ stroke }) => setLastPos({ x: stroke.x0, y: stroke.y0 }));
     socket.on('draw-move', ({ stroke }) => drawLine(stroke));
     socket.on('draw-end', () => setLastPos(null));
@@ -40,50 +44,44 @@ function DrawingCanvas({ socket, tool, roomId }) {
     };
   }, [socket]);
 
-  const getMousePos = (e) => {
+  // 🔁 Helper to get mouse or touch position
+  const getRelativePos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
+    const clientX = e.clientX ?? e.touches?.[0]?.clientX;
+    const clientY = e.clientY ?? e.touches?.[0]?.clientY;
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: clientX - rect.left,
+      y: clientY - rect.top,
     };
   };
 
-  const handleMouseDown = (e) => {
-    const pos = getMousePos(e);
+  const startDraw = (e) => {
+    const pos = getRelativePos(e);
     setIsDrawing(true);
     setLastPos(pos);
+
     socket.emit('draw-start', {
       roomId,
       stroke: { x0: pos.x, y0: pos.y, color: tool.color, width: tool.width },
     });
   };
 
-  const handleMouseMove = (e) => {
+  const moveDraw = (e) => {
     if (!isDrawing || !lastPos) return;
-    const newPos = getMousePos(e);
+    const pos = getRelativePos(e);
+
     const stroke = {
       x0: lastPos.x,
       y0: lastPos.y,
-      x1: newPos.x,
-      y1: newPos.y,
+      x1: pos.x,
+      y1: pos.y,
       color: tool.color,
       width: tool.width,
     };
+
     socket.emit('draw-move', { roomId, stroke });
 
     const ctx = canvasRef.current.getContext('2d');
-    drawLine(stroke, ctx);
-    setLastPos(newPos);
-  };
-
-  const handleMouseUp = () => {
-    if (!isDrawing) return;
-    setIsDrawing(false);
-    socket.emit('draw-end', { roomId });
-    setLastPos(null);
-  };
-
-  const drawLine = (stroke, ctx) => {
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.width;
     ctx.lineCap = 'round';
@@ -91,6 +89,15 @@ function DrawingCanvas({ socket, tool, roomId }) {
     ctx.moveTo(stroke.x0, stroke.y0);
     ctx.lineTo(stroke.x1, stroke.y1);
     ctx.stroke();
+
+    setLastPos(pos);
+  };
+
+  const endDraw = () => {
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    socket.emit('draw-end', { roomId });
+    setLastPos(null);
   };
 
   return (
@@ -103,10 +110,14 @@ function DrawingCanvas({ socket, tool, roomId }) {
         width: '100vw',
         height: '100%',
         flexGrow: 1,
+        touchAction: 'none', // 🚫 Prevent scroll while drawing
       }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
+      onMouseDown={startDraw}
+      onMouseMove={moveDraw}
+      onMouseUp={endDraw}
+      onTouchStart={startDraw}
+      onTouchMove={moveDraw}
+      onTouchEnd={endDraw}
     />
   );
 }
