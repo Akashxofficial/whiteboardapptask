@@ -6,7 +6,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import roomRoutes from './routes/roomRoutes.js';
 import { setupSocket } from './socket/socket.js';
-import { startCleanupJob } from './cleanupJob.js'; // ✅ NEW
+import { startCleanupJob } from './cleanupJob.js'; // ✅ Auto-cleanup job
 
 dotenv.config();
 
@@ -17,6 +17,11 @@ const io = new Server(server, {
     origin: '*',
     methods: ['GET', 'POST']
   }
+});
+
+// ✅ Root route for Render check
+app.get('/', (req, res) => {
+  res.send("✅ Collaborative Whiteboard API is running.");
 });
 
 // Middlewares
