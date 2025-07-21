@@ -56,13 +56,29 @@ function Whiteboard() {
   }, [roomId]);
 
   if (!isReady)
-    return <p style={{ padding: 20 }}>🔄 Connecting to room...</p>;
+    return (
+      <div
+        style={{
+          height: '100vh',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: '#111',
+          color: '#00ffe1',
+          fontSize: '18px',
+          fontFamily: 'Orbitron, sans-serif',
+          textShadow: '0 0 8px #00ffe1',
+        }}
+      >
+        🔄 Connecting to room...
+      </div>
+    );
 
   return (
     <>
       <Toaster position="top-right" reverseOrder={false} />
 
-      {}
+      {/* Top Info Bar */}
       <div
         style={{
           padding: '10px',
@@ -84,7 +100,7 @@ function Whiteboard() {
         </div>
       </div>
 
-      {}
+      {/* Main Whiteboard Area */}
       <div
         style={{
           display: 'flex',
