@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 
-// Helper: random color for each user (used if backend doesn't assign one)
+
 const COLORS = ['red', 'blue', 'green', 'orange', 'purple', 'teal'];
 const getRandomColor = () => COLORS[Math.floor(Math.random() * COLORS.length)];
 
@@ -11,7 +11,7 @@ function UserCursors({ socket, roomId }) {
   useEffect(() => {
     if (!socket) return;
 
-    // 🔴 Listen for other users' cursor updates
+ 
     socket.on('cursor-update', ({ socketId, cursor }) => {
       setUserColors(prev => ({
         ...prev,
@@ -24,7 +24,7 @@ function UserCursors({ socket, roomId }) {
       }));
     });
 
-    // 🧹 Remove cursors if inactive > 3s
+
     const interval = setInterval(() => {
       setCursors((prev) => {
         const now = Date.now();
@@ -38,7 +38,7 @@ function UserCursors({ socket, roomId }) {
       });
     }, 1000);
 
-    // 🧠 Send own cursor position (throttled to ~60fps)
+
     let lastSent = 0;
     const throttledMouseMove = (e) => {
       const now = Date.now();

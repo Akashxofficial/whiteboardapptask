@@ -1,16 +1,15 @@
-// models/Room.js
 
 import mongoose from 'mongoose';
 
-// Schema for each drawing command (stroke or clear)
+
 const drawingCommandSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['stroke', 'clear'], // Better validation
+    enum: ['stroke', 'clear'],
     required: true,
   },
   data: {
-    type: Object, // For stroke: path, color, width; for clear: can be {}
+    type: Object, 
     default: {},
   },
   timestamp: {
@@ -19,7 +18,7 @@ const drawingCommandSchema = new mongoose.Schema({
   },
 });
 
-// Main Room schema
+
 const roomSchema = new mongoose.Schema({
   roomId: {
     type: String,
@@ -40,7 +39,7 @@ const roomSchema = new mongoose.Schema({
   },
 });
 
-// Create and export the model
+
 const Room = mongoose.model('Room', roomSchema);
 
 export default Room;

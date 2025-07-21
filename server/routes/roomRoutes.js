@@ -7,7 +7,7 @@ router.post('/join', async (req, res) => {
 
   let room = await Room.findOne({ roomId });
 
-  // ✅ If room doesn't exist, create it dynamically
+ 
   if (!room) {
     room = await Room.create({ roomId });
     console.log("🆕 Room created:", roomId);

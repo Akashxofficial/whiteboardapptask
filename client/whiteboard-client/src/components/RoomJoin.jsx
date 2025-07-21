@@ -14,12 +14,12 @@ function RoomJoin() {
     }
 
     try {
-      // ✅ Call Render-deployed backend
+  
       await axios.post('https://whiteboardapptask.onrender.com/api/rooms/join', {
         roomId: code,
       });
 
-      // ✅ Navigate to the whiteboard room
+
       navigate(`/room/${code}`);
     } catch (err) {
       console.error('Error joining/creating room:', err);

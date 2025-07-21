@@ -1,6 +1,6 @@
 import Room from '../models/Room.js';
 
-const roomUserMap = {}; // Keeps track of users in each room
+const roomUserMap = {}; 
 
 export function setupSocket(io) {
   io.on('connection', (socket) => {
@@ -8,12 +8,12 @@ export function setupSocket(io) {
 
     let currentRoom = null;
 
-    // ✅ JOIN ROOM
+
     socket.on('join-room', async (roomId) => {
       currentRoom = roomId;
       socket.join(roomId);
 
-      // Track users in memory
+
       if (!roomUserMap[roomId]) roomUserMap[roomId] = new Set();
       roomUserMap[roomId].add(socket.id);
 
@@ -22,7 +22,7 @@ export function setupSocket(io) {
 
       console.log(`🔗 ${socket.id} joined ${roomId} | Users: ${userCount}`);
 
-      // Optional: Restore saved strokes (if you want to preload drawings)
+
       const room = await Room.findOne({ roomId });
       if (room && room.drawingData.length > 0) {
         room.drawingData.forEach((item) => {
@@ -35,7 +35,7 @@ export function setupSocket(io) {
       }
     });
 
-    // ✅ CURSOR TRACKING
+
     socket.on('cursor-move', ({ roomId, cursor }) => {
       socket.to(roomId).emit('cursor-update', {
         socketId: socket.id,
@@ -43,7 +43,7 @@ export function setupSocket(io) {
       });
     });
 
-    // ✅ DRAWING EVENTS
+
     socket.on('draw-start', (data) => {
       socket.to(data.roomId).emit('draw-start', data);
     });
@@ -67,7 +67,7 @@ export function setupSocket(io) {
       }
     });
 
-    // ✅ CLEAR CANVAS
+
     socket.on('clear-canvas', async (roomId) => {
       io.to(roomId).emit('clear-canvas');
 
@@ -82,14 +82,14 @@ export function setupSocket(io) {
       }
     });
 
-    // ✅ USER DISCONNECTS
+
     socket.on('disconnect', () => {
       if (currentRoom && roomUserMap[currentRoom]) {
         roomUserMap[currentRoom].delete(socket.id);
 
         const userCount = roomUserMap[currentRoom].size;
         if (userCount === 0) {
-          delete roomUserMap[currentRoom]; // Clean up empty room
+          delete roomUserMap[currentRoom]; 
         } else {
           io.to(currentRoom).emit('user-count', userCount);
         }

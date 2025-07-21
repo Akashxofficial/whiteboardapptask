@@ -19,9 +19,8 @@ const io = new Server(server, {
   }
 });
 
-// ✅ Root route for Render check
 app.get('/', (req, res) => {
-  res.send("✅ Collaborative Whiteboard API is running.");
+  res.send(" Collaborative Whiteboard API is running.");
 });
 
 // Middlewares
@@ -44,10 +43,10 @@ mongoose.connect(process.env.MONGO_URI, {
 // Routes
 app.use('/api/rooms', roomRoutes);
 
-// Socket.io setup
+
 setupSocket(io);
 
-// ✅ Start background cleanup
+
 startCleanupJob();
 
 // Start server

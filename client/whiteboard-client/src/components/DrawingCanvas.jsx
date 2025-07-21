@@ -5,20 +5,20 @@ function DrawingCanvas({ socket, tool, roomId }) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [lastPos, setLastPos] = useState(null);
 
-  // 🖌️ Resize canvas and setup listeners
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight - 150; // for toolbar
+      canvas.height = window.innerHeight - 150; 
     };
 
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    // Line drawing logic
+
     const drawLine = ({ x0, y0, x1, y1, color, width }) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
@@ -29,7 +29,6 @@ function DrawingCanvas({ socket, tool, roomId }) {
       ctx.stroke();
     };
 
-    // 📡 Socket listeners
     socket.on('draw-start', ({ stroke }) => setLastPos({ x: stroke.x0, y: stroke.y0 }));
     socket.on('draw-move', ({ stroke }) => drawLine(stroke));
     socket.on('draw-end', () => setLastPos(null));
@@ -44,7 +43,7 @@ function DrawingCanvas({ socket, tool, roomId }) {
     };
   }, [socket]);
 
-  // 🔁 Helper to get mouse or touch position
+ 
   const getRelativePos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const clientX = e.clientX ?? e.touches?.[0]?.clientX;
@@ -110,7 +109,7 @@ function DrawingCanvas({ socket, tool, roomId }) {
         width: '100vw',
         height: '100%',
         flexGrow: 1,
-        touchAction: 'none', // 🚫 Prevent scroll while drawing
+        touchAction: 'none', 
       }}
       onMouseDown={startDraw}
       onMouseMove={moveDraw}
