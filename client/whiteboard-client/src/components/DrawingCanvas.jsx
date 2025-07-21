@@ -5,19 +5,17 @@ function DrawingCanvas({ socket, tool, roomId }) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [lastPos, setLastPos] = useState(null);
 
-
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight - 150; 
+      canvas.height = window.innerHeight - 150; // Leave room for toolbar
     };
 
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
-
 
     const drawLine = ({ x0, y0, x1, y1, color, width }) => {
       ctx.strokeStyle = color;
@@ -43,7 +41,6 @@ function DrawingCanvas({ socket, tool, roomId }) {
     };
   }, [socket]);
 
- 
   const getRelativePos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const clientX = e.clientX ?? e.touches?.[0]?.clientX;
@@ -55,6 +52,7 @@ function DrawingCanvas({ socket, tool, roomId }) {
   };
 
   const startDraw = (e) => {
+    e.preventDefault();
     const pos = getRelativePos(e);
     setIsDrawing(true);
     setLastPos(pos);
@@ -66,6 +64,7 @@ function DrawingCanvas({ socket, tool, roomId }) {
   };
 
   const moveDraw = (e) => {
+    e.preventDefault();
     if (!isDrawing || !lastPos) return;
     const pos = getRelativePos(e);
 
@@ -81,6 +80,19 @@ function DrawingCanvas({ socket, tool, roomId }) {
     socket.emit('draw-move', { roomId, stroke });
 
     const ctx = canvasRef.current.getContext('2d');
+    drawLine(stroke, ctx);
+    setLastPos(pos);
+  };
+
+  const endDraw = (e) => {
+    e?.preventDefault();
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    socket.emit('draw-end', { roomId });
+    setLastPos(null);
+  };
+
+  const drawLine = (stroke, ctx) => {
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.width;
     ctx.lineCap = 'round';
@@ -88,15 +100,6 @@ function DrawingCanvas({ socket, tool, roomId }) {
     ctx.moveTo(stroke.x0, stroke.y0);
     ctx.lineTo(stroke.x1, stroke.y1);
     ctx.stroke();
-
-    setLastPos(pos);
-  };
-
-  const endDraw = () => {
-    if (!isDrawing) return;
-    setIsDrawing(false);
-    socket.emit('draw-end', { roomId });
-    setLastPos(null);
   };
 
   return (
@@ -109,11 +112,12 @@ function DrawingCanvas({ socket, tool, roomId }) {
         width: '100vw',
         height: '100%',
         flexGrow: 1,
-        touchAction: 'none', 
+        touchAction: 'none', // Prevent zoom/pan on mobile
       }}
       onMouseDown={startDraw}
       onMouseMove={moveDraw}
       onMouseUp={endDraw}
+      onMouseLeave={endDraw}
       onTouchStart={startDraw}
       onTouchMove={moveDraw}
       onTouchEnd={endDraw}

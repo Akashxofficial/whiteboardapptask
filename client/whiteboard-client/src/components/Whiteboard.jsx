@@ -55,36 +55,64 @@ function Whiteboard() {
     };
   }, [roomId]);
 
-  if (!isReady) return <p style={{ padding: 20 }}>🔄 Connecting to room...</p>;
+  if (!isReady)
+    return <p style={{ padding: 20 }}>🔄 Connecting to room...</p>;
 
   return (
     <>
       <Toaster position="top-right" reverseOrder={false} />
+
+      {}
       <div
         style={{
           padding: '10px',
           background: '#f2f2f2',
           display: 'flex',
-          flexDirection: 'row',
-          justifyContent: 'space-between',
+          flexDirection: 'column',
+          gap: '6px',
           alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '10px',
           textAlign: 'center',
+          fontSize: '14px',
         }}
       >
-        <div style={{ fontSize: '16px' }}>
+        <div>
           <strong>Room:</strong> {roomId} &nbsp; | &nbsp;
           <strong>Users:</strong> {users}
         </div>
-        <div style={{ fontSize: '16px', color: status.includes('🟢') ? 'green' : 'red' }}>
+        <div style={{ color: status.includes('🟢') ? 'green' : 'red' }}>
           <strong>Status:</strong> {status}
         </div>
       </div>
 
-      <Toolbar tool={tool} setTool={setTool} socket={socketRef.current} roomId={roomId} />
-      <DrawingCanvas socket={socketRef.current} tool={tool} roomId={roomId} />
-      <UserCursors socket={socketRef.current} roomId={roomId} />
+      {}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: 'calc(100vh - 80px)',
+          width: '100vw',
+          overflow: 'hidden',
+        }}
+      >
+        <Toolbar
+          tool={tool}
+          setTool={setTool}
+          socket={socketRef.current}
+          roomId={roomId}
+        />
+
+        <div style={{ flexGrow: 1, position: 'relative' }}>
+          <DrawingCanvas
+            socket={socketRef.current}
+            tool={tool}
+            roomId={roomId}
+          />
+          <UserCursors
+            socket={socketRef.current}
+            roomId={roomId}
+          />
+        </div>
+      </div>
     </>
   );
 }
