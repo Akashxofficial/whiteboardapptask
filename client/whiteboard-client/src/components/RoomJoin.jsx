@@ -4,16 +4,25 @@ import axios from 'axios';
 
 function RoomJoin() {
   const [roomCode, setRoomCode] = useState('');
+  const [name, setName] = useState(localStorage.getItem('wb:name') || '');
   const navigate = useNavigate();
 
   const handleJoin = async () => {
     const code = roomCode.trim().toUpperCase();
+    const displayName = name.trim() || 'Guest';
 
     if (!/^[A-Z0-9]{4,8}$/.test(code)) {
       return alert("Room code must be 4–8 uppercase alphanumeric characters.");
     }
 
     try {
+      // persist name (and random color if absent) for presence on connect
+      localStorage.setItem('wb:name', displayName);
+      if (!localStorage.getItem('wb:color')) {
+        const color = `hsl(${Math.floor(Math.random() * 360)} 90% 55%)`;
+        localStorage.setItem('wb:color', color);
+      }
+
       await axios.post('https://whiteboardapptask.onrender.com/api/rooms/join', {
         roomId: code,
       });
@@ -35,6 +44,14 @@ function RoomJoin() {
           onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
           placeholder="e.g. ABC123"
           style={styles.input}
+        />
+        <div style={{ height: 12 }} />
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Enter your name"
+          style={styles.nameInput}
         />
         <br /><br />
         <button onClick={handleJoin} style={styles.button}>
@@ -81,6 +98,18 @@ const styles = {
     color: '#00ffd0',
     borderRadius: '6px',
     textTransform: 'uppercase',
+    outline: 'none',
+    boxShadow: 'inset 0 0 8px rgba(0,255,208,0.3)',
+  },
+  nameInput: {
+    padding: '12px',
+    fontSize: '16px',
+    width: '100%',
+    maxWidth: '280px',
+    border: '1px solid #00ffd0',
+    backgroundColor: '#111',
+    color: '#00ffd0',
+    borderRadius: '6px',
     outline: 'none',
     boxShadow: 'inset 0 0 8px rgba(0,255,208,0.3)',
   },

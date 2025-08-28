@@ -1,55 +1,92 @@
-import express from 'express';
-import cors from 'cors';
-import http from 'http';
-import { Server } from 'socket.io';
-import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-import roomRoutes from './routes/roomRoutes.js';
-import { setupSocket } from './socket/socket.js';
-import { startCleanupJob } from './cleanupJob.js'; // ✅ Auto-cleanup job
+import express from "express";
+import cors from "cors";
+import http from "http";
+import { Server } from "socket.io";
+import mongoose from "mongoose";
+import dotenv from "dotenv";
+
+import roomRoutes from "./routes/roomRoutes.js";
+import { setupSocket } from "./socket/socket.js";
+import { startCleanupJob } from "./cleanupJob.js";
 
 dotenv.config();
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
 
-app.get('/', (req, res) => {
-  res.send(" Collaborative Whiteboard API is running.");
-});
+/* ---------------- CORS (Express v5 compatible) ---------------- */
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "https://whiteboardapptask.vercel.app",
+];
 
-// Middlewares
-app.use(cors());
+// CORS middleware
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error(`CORS blocked: ${origin}`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+  })
+);
+
+// Preflight for all routes (Express v5: '*' ❌, use regex ✅)
+app.options(/.*/, cors({ origin: ALLOWED_ORIGINS, credentials: true }));
+
 app.use(express.json());
 
-// MongoDB connection
-if (!process.env.MONGO_URI) {
-  console.error("❌ MONGO_URI not found in .env file");
-  process.exit(1);
+/* ---------------- Basic health route ---------------- */
+app.get("/", (_req, res) => {
+  res.send("🎨 Collaborative Whiteboard API is running.");
+});
+
+/* ---------------- MongoDB ---------------- */
+const mongoURI = process.env.MONGO_URI;
+if (!mongoURI) {
+  console.error("❌ MONGO_URI missing in .env");
+} else {
+  try {
+    await mongoose.connect(mongoURI);
+    console.log("✅ MongoDB Connected");
+  } catch (err) {
+    console.error("❌ MongoDB connect error:", err?.message || err);
+  }
 }
 
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => console.error("❌ MongoDB Error:", err));
+/* ---------------- API Routes ---------------- */
+app.use("/api/rooms", roomRoutes);
 
-// Routes
-app.use('/api/rooms', roomRoutes);
+/* ---------------- HTTP + Socket.IO ---------------- */
+const server = http.createServer(app);
 
+const io = new Server(server, {
+  cors: { origin: ALLOWED_ORIGINS, credentials: true, methods: ["GET", "POST"] },
+  transports: ["websocket", "polling"],
+  pingTimeout: 30000,
+  pingInterval: 25000,
+});
+
+io.engine.on("connection_error", (err) => {
+  console.error("⚠️ engine connection_error:", {
+    code: err.code,
+    message: err.message,
+    context: err.context,
+  });
+});
 
 setupSocket(io);
-
-
 startCleanupJob();
 
-// Start server
+/* ---------------- Global error logging ---------------- */
+process.on("unhandledRejection", (e) =>
+  console.error("UNHANDLED REJECTION:", e)
+);
+process.on("uncaughtException", (e) =>
+  console.error("UNCAUGHT EXCEPTION:", e)
+);
+
+/* ---------------- Start server ---------------- */
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
