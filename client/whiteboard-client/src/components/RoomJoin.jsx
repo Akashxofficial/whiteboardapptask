@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
 
 function RoomJoin() {
   const [roomCode, setRoomCode] = useState('');
   const [name, setName] = useState(localStorage.getItem('wb:name') || '');
   const navigate = useNavigate();
 
-  const handleJoin = async () => {
+  const handleJoin = () => {
     const code = roomCode.trim().toUpperCase();
     const displayName = name.trim() || 'Guest';
 
@@ -15,23 +14,15 @@ function RoomJoin() {
       return alert("Room code must be 4–8 uppercase alphanumeric characters.");
     }
 
-    try {
-      // persist name (and random color if absent) for presence on connect
-      localStorage.setItem('wb:name', displayName);
-      if (!localStorage.getItem('wb:color')) {
-        const color = `hsl(${Math.floor(Math.random() * 360)} 90% 55%)`;
-        localStorage.setItem('wb:color', color);
-      }
-
-      await axios.post('https://whiteboardapptask.onrender.com/api/rooms/join', {
-        roomId: code,
-      });
-
-      navigate(`/room/${code}`);
-    } catch (err) {
-      console.error('Error joining/creating room:', err);
-      alert("Something went wrong while joining the room.");
+    // persist name (and random color if absent) for presence on connect
+    localStorage.setItem('wb:name', displayName);
+    if (!localStorage.getItem('wb:color')) {
+      const color = `hsl(${Math.floor(Math.random() * 360)} 90% 55%)`;
+      localStorage.setItem('wb:color', color);
     }
+
+    // Navigate directly to room - socket will handle room creation/validation
+    navigate(`/room/${code}`);
   };
 
   return (

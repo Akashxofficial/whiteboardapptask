@@ -1,11 +1,237 @@
 // client/src/components/Whiteboard.jsx
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import { useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import DrawingCanvas from "./DrawingCanvas";
 import Toolbar from "./Toolbar";
 import UserCursors from "./UserCursors";
 import toast, { Toaster } from "react-hot-toast";
+
+// Optimized Shape Renderer Component
+const ShapeRenderer = memo(({
+  shapes,
+  selectedIds,
+  tool,
+  roomId,
+  socket,
+  onShapeMouseDown,
+  onShapeTouchStart,
+  setSelectedIds,
+  setShapes,
+  onResize
+}) => {
+  // Memoize expensive computations
+  const visibleShapes = useMemo(() => {
+    if (!shapes || shapes.length === 0) return [];
+
+    // For performance, limit rendering to reasonable number of shapes
+    // In a real app, you'd implement proper virtualization
+    const MAX_SHAPES = 500;
+    return shapes.length > MAX_SHAPES ? shapes.slice(-MAX_SHAPES) : shapes;
+  }, [shapes]);
+
+  const handleDelete = useCallback((e, shapeId) => {
+    e.stopPropagation();
+    socket?.emit("shape:delete", { roomId, id: shapeId });
+    setSelectedIds(prev => {
+      const n = new Set(prev);
+      n.delete(shapeId);
+      return n;
+    });
+  }, [socket, roomId, setSelectedIds]);
+
+  const handleTextChange = useCallback((shapeId, text) => {
+    setShapes(prev =>
+      prev.map(x => x._id === shapeId ? { ...x, text } : x)
+    );
+    socket?.emit("shape:update", {
+      roomId,
+      id: shapeId,
+      patch: { text },
+    });
+  }, [setShapes, socket, roomId]);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 5,
+        pointerEvents: tool.mode === "select" ? "auto" : "none",
+        touchAction: "none",
+      }}
+    >
+      {visibleShapes.map((s) => {
+        const selected = selectedIds.has(s._id);
+        return (
+          <ShapeItem
+            key={s._id}
+            shape={s}
+            selected={selected}
+            tool={tool}
+            onMouseDown={onShapeMouseDown}
+            onTouchStart={onShapeTouchStart}
+            onDelete={handleDelete}
+            onTextChange={handleTextChange}
+            onResize={onResize}
+          />
+        );
+      })}
+    </div>
+  );
+});
+
+// Individual Shape Component - Memoized for performance
+const ShapeItem = memo(({
+  shape: s,
+  selected,
+  tool,
+  onMouseDown,
+  onTouchStart,
+  onDelete,
+  onTextChange,
+  onResize
+}) => {
+  const handleTextChange = useCallback((e) => {
+    onTextChange(s._id, e.target.value);
+  }, [s._id, onTextChange]);
+
+  const handleDelete = useCallback((e) => {
+    onDelete(e, s._id);
+  }, [s._id, onDelete]);
+
+  const handleResize = useCallback((e, corner) => {
+    e.stopPropagation();
+    onResize(e, s, corner);
+  }, [s, onResize]);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: s.x,
+        top: s.y,
+        width: s.w,
+        height: s.h,
+        transform: `rotate(${s.rot || 0}deg)`,
+        border:
+          s.type === "rect" || s.type === "ellipse"
+            ? `1px solid ${s.color || "#111"}`
+            : "none",
+        background:
+          s.type === "note"
+            ? s.color || "#ffef8a"
+            : "transparent",
+        borderRadius:
+          s.type === "ellipse" ? "50%" : s.type === "note" ? 6 : 2,
+        boxShadow: selected
+          ? "0 0 0 2px #4c9ffe, 0 2px 6px rgba(0,0,0,.08)"
+          : s.type === "note"
+          ? "0 2px 6px rgba(0,0,0,.08)"
+          : "none",
+        padding: s.type === "note" ? 8 : 0,
+        pointerEvents: tool.mode === "select" ? "auto" : "none",
+        userSelect: "none",
+        cursor: tool.mode === "select" ? "move" : "crosshair",
+        touchAction: "none",
+      }}
+      onMouseDown={(e) => onMouseDown(e, s._id)}
+      onTouchStart={(e) => onTouchStart(e, s._id)}
+    >
+      {/* Delete Button */}
+      {tool.mode === "select" && (
+        <button
+          onClick={handleDelete}
+          title="Delete"
+          style={{
+            position: "absolute",
+            right: 4,
+            top: 4,
+            border: "none",
+            background: "rgba(0,0,0,.06)",
+            borderRadius: 4,
+            padding: "2px 6px",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          ×
+        </button>
+      )}
+
+      {/* Sticky note text */}
+      {s.type === "note" && tool.mode === "select" && (
+        <textarea
+          value={s.text || ""}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          onChange={handleTextChange}
+          style={{
+            width: "100%",
+            height: "100%",
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            resize: "none",
+            fontSize: 14,
+          }}
+        />
+      )}
+
+      {/* Resize handles */}
+      {selected &&
+        (s.type === "rect" || s.type === "ellipse") &&
+        tool.mode === "select" && (
+          <>
+            <Handle
+              left={-4}
+              top={-4}
+              cursor="nwse-resize"
+              onMouseDown={(e) => handleResize(e, "nw")}
+            />
+            <Handle
+              left={s.w - 4}
+              top={-4}
+              cursor="nesw-resize"
+              onMouseDown={(e) => handleResize(e, "ne")}
+            />
+            <Handle
+              left={-4}
+              top={s.h - 4}
+              cursor="nesw-resize"
+              onMouseDown={(e) => handleResize(e, "sw")}
+            />
+            <Handle
+              left={s.w - 4}
+              top={s.h - 4}
+              cursor="nwse-resize"
+              onMouseDown={(e) => handleResize(e, "se")}
+            />
+          </>
+        )}
+    </div>
+  );
+});
+
+// Optimized Handle Component
+const Handle = memo(({ left, top, cursor, onMouseDown }) => (
+  <div
+    onMouseDown={onMouseDown}
+    style={{
+      position: "absolute",
+      left,
+      top,
+      width: 8,
+      height: 8,
+      background: "#fff",
+      border: "1px solid #4c9ffe",
+      borderRadius: 2,
+      cursor,
+      pointerEvents: "auto",
+    }}
+  />
+));
 
 function Whiteboard() {
   const { roomId } = useParams();
@@ -16,11 +242,17 @@ function Whiteboard() {
   const [status, setStatus] = useState("🔴 Disconnected");
   const [isReady, setIsReady] = useState(false);
   const [shapes, setShapes] = useState([]);
+  const [isLoadingShapes, setIsLoadingShapes] = useState(false);
+  const [connectionStep, setConnectionStep] = useState("Connecting...");
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const socketRef = useRef(null); // socket connection  
+  const socketRef = useRef(null); // socket connection
   const myIdRef = useRef(null);
   const dragRef = useRef(null);
   const boardRef = useRef(null);
+
+  // mirror shapes in ref so wrappers read fresh value
+  const shapesRef = useRef(shapes);
+  useEffect(() => { shapesRef.current = shapes; }, [shapes]);
 
   // --- presence / cursors / activity ---
   const [presence, setPresence] = useState({});
@@ -43,12 +275,16 @@ function Whiteboard() {
   });
 
   // --- undo/redo stacks (per user) ---
-  const undoRef = useRef([]); // push {do:fn, undo:fn}  
+  const undoRef = useRef([]); // push {do:fn, undo:fn}
   const redoRef = useRef([]);
+  // 🔧 history re-render ticker
+  const [historyVer, setHistoryVer] = useState(0);
+  const bumpHistory = () => setHistoryVer(v => v + 1);
 
   const pushCmd = (cmd) => {
     undoRef.current.push(cmd);
     redoRef.current = [];
+    bumpHistory();
   };
   const undo = () => {
     const cmd = undoRef.current.pop();
@@ -58,6 +294,8 @@ function Whiteboard() {
       redoRef.current.push(cmd);
     } catch (e) {
       console.error("Undo failed", e);
+    } finally {
+      bumpHistory();
     }
   };
   const redo = () => {
@@ -68,7 +306,20 @@ function Whiteboard() {
       undoRef.current.push(cmd);
     } catch (e) {
       console.error("Redo failed", e);
+    } finally {
+      bumpHistory();
     }
+  };
+
+  // ---- local shape helpers (optimistic) ----
+  const applyLocalUpdate = (id, patch) => {
+    setShapes((prev) => prev.map((s) => (s._id === id ? { ...s, ...patch } : s)));
+  };
+  const applyLocalDelete = (id) => {
+    setShapes((prev) => prev.filter((s) => s._id !== id));
+  };
+  const applyLocalAdd = (shape) => {
+    setShapes((prev) => (prev.some(x => x._id === shape._id) ? prev : [...prev, shape]));
   };
 
   /* ---------------- Socket setup ---------------- */
@@ -79,17 +330,73 @@ function Whiteboard() {
       transports: ["websocket", "polling"],
       upgrade: true,
       reconnection: true,
-      reconnectionAttempts: Infinity,
+      reconnectionAttempts: 5, // Limit reconnection attempts
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
+      reconnectionDelayMax: 3000, // Reduced from 5000
+      timeout: 15000, // Reduced from 20000
       forceNew: true,
+      autoConnect: true,
     });
     socketRef.current = socket;
+
+    // ======= emit wrapper: add/delete/clear -> optimistic + history =======
+    const performAdd = (shape) => {
+      applyLocalAdd(shape);
+      socket._emit("shape:add", { roomId, shape });
+    };
+    const performDelete = (id) => {
+      applyLocalDelete(id);
+      socket._emit("shape:delete", { roomId, id });
+    };
+    const performClear = () => {
+      setShapes([]);
+      socket._emit("clear-canvas", { roomId });
+    };
+
+    socket._emit = socket.emit.bind(socket);
+    socket.emit = (event, payload) => {
+      if (event === "shape:add" && payload?.shape) {
+        const shape = payload.shape;
+        pushCmd({
+          do: () => performAdd(shape),
+          undo: () => performDelete(shape._id),
+        });
+        performAdd(shape);
+        return;
+      }
+      if (event === "shape:delete" && payload?.id) {
+        const snap = shapesRef.current.find((x) => x._id === payload.id);
+        if (snap) {
+          pushCmd({
+            do: () => performDelete(snap._id),
+            undo: () => performAdd(snap),
+          });
+          performDelete(snap._id);
+          return;
+        }
+      }
+      if (event === "clear-canvas") {
+        const before = [...shapesRef.current];
+        pushCmd({
+          do: () => performClear(),
+          undo: () => {
+            setShapes(before);
+            // resync others
+            for (const sh of before) socket._emit("shape:add", { roomId, shape: sh });
+          },
+        });
+        performClear();
+        return;
+      }
+      // default passthrough
+      socket._emit(event, payload);
+    };
+    // ===============================================================
 
     const onConnect = () => {
       myIdRef.current = socket.id;
       setStatus("🟢 Connected");
+      setConnectionStep("Joining room...");
       socket.emit("join-room", roomId);
       socket.emit("presence:join", {
         roomId,
@@ -101,6 +408,10 @@ function Whiteboard() {
     const onUserCount = (count) => {
       setUsers(count);
       setIsReady(true);
+      setConnectionStep("Loading content...");
+      setIsLoadingShapes(true);
+      // Request shapes lazily after room is joined
+      socket.emit("shapes:request", { roomId });
       toast.success(`👥 ${count} user${count > 1 ? "s" : ""} in room`);
     };
 
@@ -109,17 +420,36 @@ function Whiteboard() {
     socket.on("user-count", onUserCount);
 
     // shapes sync
-    const initShapes = (list) => setShapes(list || []);
-    const added = (s) => setShapes((p) => [...p, s]);
+    const initShapes = (list) => {
+      setShapes(list || []);
+      if (list && list.length > 0) {
+        setConnectionStep("Room ready!");
+        setTimeout(() => setConnectionStep(""), 2000);
+      }
+    };
+    const added = (s) =>
+      setShapes((p) => (p.some((x) => x._id === s._id) ? p : [...p, s]));
     const updated = ({ id, patch }) =>
       setShapes((p) => p.map((x) => (x._id === id ? { ...x, ...patch } : x)));
     const deleted = ({ id }) =>
       setShapes((p) => p.filter((x) => x._id !== id));
 
+    // lazy loading response
+    const onShapesLoaded = (loadedShapes) => {
+      setShapes(loadedShapes || []);
+      setIsLoadingShapes(false);
+      setConnectionStep("Room ready!");
+      setTimeout(() => setConnectionStep(""), 2000);
+    };
+
     socket.on("shapes:init", initShapes);
     socket.on("shape:added", added);
     socket.on("shape:updated", updated);
     socket.on("shape:deleted", deleted);
+    socket.on("shapes:loaded", onShapesLoaded);
+
+    // clear-canvas broadcast from others
+    socket.on("clear-canvas", () => setShapes([]));
 
     // presence
     const onPresenceState = (map) => setPresence(map || {});
@@ -173,6 +503,7 @@ function Whiteboard() {
       socket.off("presence:leave", onPresenceLeave);
       socket.off("activity:update", onAct);
       socket.off("camera:update", onCam);
+      socket.off("clear-canvas");
     };
   }, [roomId]);
 
@@ -181,12 +512,22 @@ function Whiteboard() {
     window.__WB_SHAPES = shapes;
   }, [shapes]);
 
-  // idle detection + heartbeat (presence)
+  // idle detection + heartbeat (presence) - optimized
+  const bumpPresence = useCallback(() => {
+    const s = socketRef.current;
+    if (!s) return;
+    s.emit("presence:update", {
+      roomId,
+      patch: { lastActive: Date.now() },
+    });
+  }, [roomId]);
+
   useEffect(() => {
     const s = socketRef.current;
     if (!s) return;
     let idleTimer;
     let isIdle = false;
+    let heartbeatInterval;
 
     const bump = () => {
       if (!s) return;
@@ -194,10 +535,7 @@ function Whiteboard() {
         isIdle = false;
         s.emit("presence:update", { roomId, patch: { isIdle: false } });
       }
-      s.emit("presence:update", {
-        roomId,
-        patch: { lastActive: Date.now() },
-      });
+      bumpPresence();
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         isIdle = true;
@@ -206,31 +544,128 @@ function Whiteboard() {
     };
 
     const events = ["mousemove", "keydown", "mousedown", "touchstart"];
-    events.forEach((e) => window.addEventListener(e, bump));
-    const t = setInterval(bump, 10000);
+    events.forEach((e) => window.addEventListener(e, bump, { passive: true }));
+    heartbeatInterval = setInterval(bump, 10000);
     bump();
 
     return () => {
-      clearInterval(t);
+      clearInterval(heartbeatInterval);
       events.forEach((e) => window.removeEventListener(e, bump));
       clearTimeout(idleTimer);
     };
-  }, [roomId]);
+  }, [roomId, bumpPresence]);
 
-  /* ---------------- Selection helpers ---------------- */
-  const isSelected = (id) => selectedIds.has(id);
-  const setOnlySelected = (id) => setSelectedIds(new Set([id]));
-  const toggleSelected = (id) =>
+  /* ---------------- Selection helpers - OPTIMIZED ---------------- */
+  const isSelected = useCallback((id) => selectedIds.has(id), [selectedIds]);
+  const setOnlySelected = useCallback((id) => setSelectedIds(new Set([id])), []);
+  const toggleSelected = useCallback((id) =>
     setSelectedIds((prev) => {
       const n = new Set(prev);
       if (n.has(id)) n.delete(id);
       else n.add(id);
       return n;
-    });
-  const clearSelection = () => setSelectedIds(new Set());
+    }), []);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
-  /* ---------------- Drag / Touch drag (group) ---------------- */
-  function startMovePointer(clientX, clientY, id, withShift) {
+  /* ---------------- End move/resize (emit + history) - OPTIMIZED ---------------- */
+  const endMoveOrResize = useCallback(() => {
+    const d = dragRef.current;
+    if (!d) return;
+
+    if (d.mode === "move") {
+      const { dx, dy } = d.last;
+      if (dx !== 0 || dy !== 0) {
+        d.ids.forEach((id) => {
+          const o = d.originals.get(id);
+          const before = { x: o.x, y: o.y };
+          const after = { x: o.x + dx, y: o.y + dy };
+
+          // optimistic local + emit
+          applyLocalUpdate(id, after);
+          socketRef.current?.emit("shape:update", { roomId, id, patch: after });
+
+          pushCmd({
+            do: () => {
+              applyLocalUpdate(id, after);
+              socketRef.current?.emit("shape:update", { roomId, id, patch: after });
+            },
+            undo: () => {
+              applyLocalUpdate(id, before);
+              socketRef.current?.emit("shape:update", { roomId, id, patch: before });
+            },
+          });
+        });
+      }
+    } else if (d.mode === "resize") {
+      const s = shapes.find((x) => x._id === d.id);
+      if (s) {
+        const before = d.orig;
+        const after = { x: s.x, y: s.y, w: s.w, h: s.h };
+
+        applyLocalUpdate(s._id, after);
+        socketRef.current?.emit("shape:update", {
+          roomId,
+          id: s._id,
+          patch: after,
+        });
+
+        pushCmd({
+          do: () => {
+            applyLocalUpdate(s._id, after);
+            socketRef.current?.emit("shape:update", {
+              roomId,
+              id: s._id,
+              patch: after,
+            });
+          },
+          undo: () => {
+            applyLocalUpdate(s._id, before);
+            socketRef.current?.emit("shape:update", {
+              roomId,
+              id: s._id,
+              patch: before,
+            });
+          },
+        });
+      }
+    }
+
+    dragRef.current = null;
+
+    // Clean up all event listeners to prevent memory leaks
+    window.removeEventListener("mousemove", onPointerMove);
+    window.removeEventListener("mouseup", endMoveOrResize);
+    window.removeEventListener("touchmove", onTouchMove);
+    window.removeEventListener("touchend", endMoveOrResize);
+    window.removeEventListener("mousemove", onResizeMove);
+  }, [shapes, roomId, applyLocalUpdate, pushCmd]);
+
+  /* ---------------- Drag / Touch drag (group) - OPTIMIZED ---------------- */
+  const onPointerMove = useCallback((e) => {
+    const d = dragRef.current;
+    if (!d || d.mode !== "move") return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    d.last = { dx, dy };
+
+    setShapes((prev) =>
+      prev.map((s) => {
+        if (!d.ids.has(s._id)) return s;
+        const o = d.originals.get(s._id);
+        return { ...s, x: o.x + dx, y: o.y + dy };
+      })
+    );
+  }, []);
+
+  const onTouchMove = useCallback((e) => {
+    if (!dragRef.current) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    if (!t) return;
+    onPointerMove({ clientX: t.clientX, clientY: t.clientY });
+  }, [onPointerMove]);
+
+  const startMovePointer = useCallback((clientX, clientY, id, withShift) => {
     if (withShift) toggleSelected(id);
     else if (!isSelected(id)) setOnlySelected(id);
 
@@ -251,53 +686,15 @@ function Whiteboard() {
       last: { dx: 0, dy: 0 },
     };
 
-    window.addEventListener("mousemove", onPointerMove);
-    window.addEventListener("mouseup", endMoveOrResize);
+    // Use passive listeners for better performance
+    window.addEventListener("mousemove", onPointerMove, { passive: true });
+    window.addEventListener("mouseup", endMoveOrResize, { passive: true });
     window.addEventListener("touchmove", onTouchMove, { passive: false });
-    window.addEventListener("touchend", endMoveOrResize);
-  }
+    window.addEventListener("touchend", endMoveOrResize, { passive: true });
+  }, [shapes, selectedIds, isSelected, toggleSelected, setOnlySelected]);
 
-  function onPointerMove(e) {
-    const d = dragRef.current;
-    if (!d || d.mode !== "move") return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    d.last = { dx, dy };
-
-    setShapes((prev) =>
-      prev.map((s) => {
-        if (!d.ids.has(s._id)) return s;
-        const o = d.originals.get(s._id);
-        return { ...s, x: o.x + dx, y: o.y + dy };
-      })
-    );
-  }
-
-  function onTouchMove(e) {
-    if (!dragRef.current) return;
-    e.preventDefault();
-    const t = e.touches[0];
-    if (!t) return;
-    onPointerMove({ clientX: t.clientX, clientY: t.clientY });
-  }
-
-  /* ---------------- Resize ---------------- */
-  function startResize(e, s, corner) {
-    if (tool.mode !== "select") return;
-    e.stopPropagation();
-    dragRef.current = {
-      mode: "resize",
-      id: s._id,
-      corner,
-      startX: e.clientX,
-      startY: e.clientY,
-      orig: { x: s.x, y: s.y, w: s.w, h: s.h },
-    };
-    window.addEventListener("mousemove", onResizeMove);
-    window.addEventListener("mouseup", endMoveOrResize);
-  }
-
-  function onResizeMove(e) {
+  /* ---------------- Resize - OPTIMIZED ---------------- */
+  const onResizeMove = useCallback((e) => {
     const d = dragRef.current;
     if (!d || d.mode !== "resize") return;
     const dx = e.clientX - d.startX,
@@ -340,90 +737,37 @@ function Whiteboard() {
         return { ...s, x, y, w, h };
       })
     );
-  }
+  }, []);
 
-  /* ---------------- End move/resize (emit + history) ---------------- */
-  function endMoveOrResize() {
-    const d = dragRef.current;
-    if (!d) return;
+  const startResize = useCallback((e, s, corner) => {
+    if (tool.mode !== "select") return;
+    e.stopPropagation();
+    dragRef.current = {
+      mode: "resize",
+      id: s._id,
+      corner,
+      startX: e.clientX,
+      startY: e.clientY,
+      orig: { x: s.x, y: s.y, w: s.w, h: s.h },
+    };
+    window.addEventListener("mousemove", onResizeMove, { passive: true });
+    window.addEventListener("mouseup", endMoveOrResize, { passive: true });
+  }, [tool.mode]);
 
-    if (d.mode === "move") {
-      const { dx, dy } = d.last;
-      if (dx !== 0 || dy !== 0) {
-        d.ids.forEach((id) => {
-          const o = d.originals.get(id);
-          const before = { x: o.x, y: o.y };
-          const after = { x: o.x + dx, y: o.y + dy };
-
-          socketRef.current?.emit("shape:update", { roomId, id, patch: after });
-
-          pushCmd({
-            do: () =>
-              socketRef.current?.emit("shape:update", {
-                roomId,
-                id,
-                patch: after,
-              }),
-            undo: () =>
-              socketRef.current?.emit("shape:update", {
-                roomId,
-                id,
-                patch: before,
-              }),
-          });
-        });
-      }
-    } else if (d.mode === "resize") {
-      const s = shapes.find((x) => x._id === d.id);
-      if (s) {
-        const before = d.orig;
-        const after = { x: s.x, y: s.y, w: s.w, h: s.h };
-
-        socketRef.current?.emit("shape:update", {
-          roomId,
-          id: s._id,
-          patch: after,
-        });
-
-        pushCmd({
-          do: () =>
-            socketRef.current?.emit("shape:update", {
-              roomId,
-              id: s._id,
-              patch: after,
-            }),
-          undo: () =>
-            socketRef.current?.emit("shape:update", {
-              roomId,
-              id: s._id,
-              patch: before,
-            }),
-        });
-      }
-    }
-
-    dragRef.current = null;
-
-    window.removeEventListener("mousemove", onPointerMove);
-    window.removeEventListener("mouseup", endMoveOrResize);
-    window.removeEventListener("touchmove", onTouchMove);
-    window.removeEventListener("touchend", endMoveOrResize);
-    window.removeEventListener("mousemove", onResizeMove);
-  }
-
-  const onShapeMouseDown = (e, id) => {
+  const onShapeMouseDown = useCallback((e, id) => {
     if (tool.mode !== "select") return;
     e.preventDefault();
     boardRef.current?.focus();
     startMovePointer(e.clientX, e.clientY, id, e.shiftKey);
-  };
-  const onShapeTouchStart = (e, id) => {
+  }, [tool.mode, startMovePointer]);
+
+  const onShapeTouchStart = useCallback((e, id) => {
     if (tool.mode !== "select") return;
     const t = e.touches[0];
     if (!t) return;
     boardRef.current?.focus();
     startMovePointer(t.clientX, t.clientY, id, e.shiftKey || false);
-  };
+  }, [tool.mode, startMovePointer]);
 
   /* ---------------- Keyboard controls ---------------- */
   useEffect(() => {
@@ -450,8 +794,7 @@ function Whiteboard() {
 
       // Nudge / delete / escape selection
       if (selectedIds.size === 0) return;
-      let dx = 0,
-        dy = 0;
+      let dx = 0, dy = 0;
       const step = e.shiftKey ? 10 : 1;
 
       if (e.key === "ArrowLeft") dx = -step;
@@ -462,16 +805,8 @@ function Whiteboard() {
         clearSelection();
         return;
       } else if (e.key === "Delete" || e.key === "Backspace") {
+        // just emit; wrapper will handle optimistic + history
         selectedIds.forEach((id) => {
-          const sh = shapes.find((x) => x._id === id);
-          if (sh) {
-            pushCmd({
-              do: () =>
-                socketRef.current?.emit("shape:delete", { roomId, id }),
-              undo: () =>
-                socketRef.current?.emit("shape:add", { roomId, shape: sh }),
-            });
-          }
           socketRef.current?.emit("shape:delete", { roomId, id });
         });
         return;
@@ -486,32 +821,25 @@ function Whiteboard() {
         )
       );
 
-      // emit + history per-shape
+      // emit + history per-shape (optimistic)
       selectedIds.forEach((id) => {
         const sh = shapes.find((x) => x._id === id);
         if (!sh) return;
         const before = { x: sh.x ?? 0, y: sh.y ?? 0 };
         const after = { x: before.x + dx, y: before.y + dy };
 
-        socketRef.current?.emit("shape:update", {
-          roomId,
-          id,
-          patch: after,
-        });
+        applyLocalUpdate(id, after);
+        socketRef.current?.emit("shape:update", { roomId, id, patch: after });
 
         pushCmd({
-          do: () =>
-            socketRef.current?.emit("shape:update", {
-              roomId,
-              id,
-              patch: after,
-            }),
-          undo: () =>
-            socketRef.current?.emit("shape:update", {
-              roomId,
-              id,
-              patch: before,
-            }),
+          do: () => {
+            applyLocalUpdate(id, after);
+            socketRef.current?.emit("shape:update", { roomId, id, patch: after });
+          },
+          undo: () => {
+            applyLocalUpdate(id, before);
+            socketRef.current?.emit("shape:update", { roomId, id, patch: before });
+          },
         });
       });
     };
@@ -587,39 +915,51 @@ function Whiteboard() {
     };
   }, [camera.x, camera.y, camera.scale, roomId]);
 
-  // drawing activity banner (local fallback + server)
+  // drawing activity banner (local fallback + server) - optimized
+  const setDrawingActivity = useCallback((val) => {
+    const id = myIdRef.current || "me";
+    setActivity((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), drawing: val, ts: Date.now() },
+    }));
+  }, []);
+
+  // who is drawing now (3s timeout) - memoized for performance - MUST be before early return
+  const whoDrawing = useMemo(() => {
+    const now = Date.now();
+    return Object.entries(activity)
+      .filter(([, v]) => v?.drawing && now - (v.ts || 0) < 3000)
+      .map(([id]) =>
+        presence[id]?.name || (id === myIdRef.current ? "You" : "Someone")
+      );
+  }, [activity, presence, myIdRef.current]);
+
   useEffect(() => {
     const s = socketRef.current;
     if (!s) return;
 
     let drawing = false;
-    const setLocal = (val) => {
-      const id = myIdRef.current || "me";
-      setActivity((prev) => ({
-        ...prev,
-        [id]: { ...(prev[id] || {}), drawing: val, ts: Date.now() },
-      }));
-    };
 
     const down = () => {
       if (tool.mode !== "draw") return;
       drawing = true;
       s.emit("activity:update", { roomId, patch: { drawing: true } });
-      setLocal(true); // ← local so UI shows even if server doesn't echo
+      setDrawingActivity(true);
     };
+
     const up = () => {
       if (!drawing) return;
       drawing = false;
       s.emit("activity:update", { roomId, patch: { drawing: false } });
-      setLocal(false);
+      setDrawingActivity(false);
     };
 
     const el = boardRef.current;
     if (!el) return;
-    el.addEventListener("mousedown", down);
-    window.addEventListener("mouseup", up);
-    el.addEventListener("touchstart", down);
-    window.addEventListener("touchend", up);
+    el.addEventListener("mousedown", down, { passive: true });
+    window.addEventListener("mouseup", up, { passive: true });
+    el.addEventListener("touchstart", down, { passive: true });
+    window.addEventListener("touchend", up, { passive: true });
 
     return () => {
       el.removeEventListener("mousedown", down);
@@ -627,7 +967,7 @@ function Whiteboard() {
       el.removeEventListener("touchstart", down);
       window.removeEventListener("touchend", up);
     };
-  }, [tool.mode, roomId]);
+  }, [tool.mode, roomId, setDrawingActivity]);
 
   if (!isReady) {
     return (
@@ -635,6 +975,7 @@ function Whiteboard() {
         style={{
           height: "100vh",
           display: "flex",
+          flexDirection: "column",
           justifyContent: "center",
           alignItems: "center",
           backgroundColor: "#111",
@@ -642,31 +983,19 @@ function Whiteboard() {
           fontSize: "18px",
           fontFamily: "Orbitron, sans-serif",
           textShadow: "0 0 8px #00ffe1",
+          gap: "20px",
         }}
       >
-        🔄 Connecting to room...
+        <div>🔄 {connectionStep}</div>
+        {isLoadingShapes && (
+          <div style={{ fontSize: "14px", opacity: 0.8 }}>
+            Loading whiteboard content...
+          </div>
+        )}
       </div>
     );
   }
 
-  /* ---------- small component for resize handles ---------- */
-  const Handle = ({ left, top, cursor, onMouseDown }) => (
-    <div
-      onMouseDown={onMouseDown}
-      style={{
-        position: "absolute",
-        left,
-        top,
-        width: 8,
-        height: 8,
-        background: "#fff",
-        border: "1px solid #4c9ffe",
-        borderRadius: 2,
-        cursor,
-        pointerEvents: "auto",
-      }}
-    />
-  );
 
   /* ---------- MiniMap (renders shapes + viewport) ---------- */
   const MiniMap = ({ shapes, camera }) => {
@@ -770,11 +1099,6 @@ function Whiteboard() {
     );
   };
 
-  // who is drawing now (3s timeout)
-  const whoDrawing = Object.entries(activity)
-    .filter(([, v]) => v?.drawing && Date.now() - (v.ts || 0) < 3000)
-    .map(([id]) => presence[id]?.name || (id === myIdRef.current ? "You" : "Someone"));
-
   return (
     <>
       <Toaster position="top-right" reverseOrder={false} />
@@ -817,6 +1141,10 @@ function Whiteboard() {
           setTool={setTool}
           socket={socketRef.current}
           roomId={roomId}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={undoRef.current.length > 0}   // historyVer triggers re-render
+          canRedo={redoRef.current.length > 0}   // via state ticker above
         />
       </div>
 
@@ -870,176 +1198,19 @@ function Whiteboard() {
                 height: "100000px",
               }}
             >
-              {/* Shapes overlay (world space) */}
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  zIndex: 5,
-                  pointerEvents: tool.mode === "select" ? "auto" : "none",
-                  touchAction: "none",
-                }}
-              >
-                {shapes.map((s) => {
-                  const selected = selectedIds.has(s._id);
-                  return (
-                    <div
-                      key={s._id}
-                      style={{
-                        position: "absolute",
-                        left: s.x,
-                        top: s.y,
-                        width: s.w,
-                        height: s.h,
-                        transform: `rotate(${s.rot || 0}deg)`,
-                        border:
-                          s.type === "rect" || s.type === "ellipse"
-                            ? `1px solid ${s.color || "#111"}`
-                            : "none",
-                        background:
-                          s.type === "note"
-                            ? s.color || "#ffef8a"
-                            : "transparent",
-                        borderRadius:
-                          s.type === "ellipse" ? "50%" : s.type === "note" ? 6 : 2,
-                        boxShadow: selected
-                          ? "0 0 0 2px #4c9ffe, 0 2px 6px rgba(0,0,0,.08)"
-                          : s.type === "note"
-                          ? "0 2px 6px rgba(0,0,0,.08)"
-                          : "none",
-                        padding: s.type === "note" ? 8 : 0,
-                        pointerEvents: tool.mode === "select" ? "auto" : "none",
-                        userSelect: "none",
-                        cursor: tool.mode === "select" ? "move" : "crosshair",
-                        touchAction: "none",
-                      }}
-                      onMouseDown={(e) => onShapeMouseDown(e, s._id)}
-                      onTouchStart={(e) => onShapeTouchStart(e, s._id)}
-                    >
-                      {/* Delete */}
-                      {tool.mode === "select" && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const snapshot = s;
-                            pushCmd({
-                              do: () =>
-                                socketRef.current?.emit("shape:delete", {
-                                  roomId,
-                                  id: s._id,
-                                }),
-                              undo: () =>
-                                socketRef.current?.emit("shape:add", {
-                                  roomId,
-                                  shape: snapshot,
-                                }),
-                            });
-                            socketRef.current?.emit("shape:delete", {
-                              roomId,
-                              id: s._id,
-                            });
-                            setSelectedIds((prev) => {
-                              const n = new Set(prev);
-                              n.delete(s._id);
-                              return n;
-                            });
-                          }}
-                          title="Delete"
-                          style={{
-                            position: "absolute",
-                            right: 4,
-                            top: 4,
-                            border: "none",
-                            background: "rgba(0,0,0,.06)",
-                            borderRadius: 4,
-                            padding: "2px 6px",
-                            cursor: "pointer",
-                            fontSize: 12,
-                          }}
-                        >
-                          ×
-                        </button>
-                      )}
-
-                      {/* Sticky note text */}
-                      {s.type === "note" && tool.mode === "select" && (
-                        <textarea
-                          value={s.text || ""}
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onTouchStart={(e) => e.stopPropagation()}
-                          onChange={(e) => {
-                            const text = e.target.value;
-                            setShapes((prev) =>
-                              prev.map((x) =>
-                                x._id === s._id ? { ...x, text } : x
-                              )
-                            );
-                            socketRef.current?.emit("shape:update", {
-                              roomId,
-                              id: s._id,
-                              patch: { text },
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            border: "none",
-                            outline: "none",
-                            background: "transparent",
-                            resize: "none",
-                            fontSize: 14,
-                          }}
-                        />
-                      )}
-
-                      {/* Resize handles */}
-                      {selected &&
-                        (s.type === "rect" || s.type === "ellipse") &&
-                        tool.mode === "select" && (
-                          <>
-                            <Handle
-                              left={-4}
-                              top={-4}
-                              cursor="nwse-resize"
-                              onMouseDown={(e) => {
-                                e.stopPropagation();
-                                startResize(e, s, "nw");
-                              }}
-                            />
-                            <Handle
-                              left={s.w - 4}
-                              top={-4}
-                              cursor="nesw-resize"
-                              onMouseDown={(e) => {
-                                e.stopPropagation();
-                                startResize(e, s, "ne");
-                              }}
-                            />
-                            <Handle
-                              left={-4}
-                              top={s.h - 4}
-                              cursor="nesw-resize"
-                              onMouseDown={(e) => {
-                                e.stopPropagation();
-                                startResize(e, s, "sw");
-                              }}
-                            />
-                            <Handle
-                              left={s.w - 4}
-                              top={s.h - 4}
-                              cursor="nwse-resize"
-                              onMouseDown={(e) => {
-                                e.stopPropagation();
-                                startResize(e, s, "se");
-                              }}
-                            />
-                          </>
-                        )}
-                    </div>
-                  );
-                })}
-              </div>
+              {/* Shapes overlay (world space) - OPTIMIZED */}
+              <ShapeRenderer
+                shapes={shapes}
+                selectedIds={selectedIds}
+                tool={tool}
+                roomId={roomId}
+                socket={socketRef.current}
+                onShapeMouseDown={onShapeMouseDown}
+                onShapeTouchStart={onShapeTouchStart}
+                setSelectedIds={setSelectedIds}
+                setShapes={setShapes}
+                onResize={startResize}
+              />
             </div>
           </div>
 

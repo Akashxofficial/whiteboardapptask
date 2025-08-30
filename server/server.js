@@ -47,8 +47,14 @@ if (!mongoURI) {
   console.error("❌ MONGO_URI missing in .env");
 } else {
   try {
-    await mongoose.connect(mongoURI);
-    console.log("✅ MongoDB Connected");
+    // Optimize MongoDB connection with connection pooling
+    await mongoose.connect(mongoURI, {
+      maxPoolSize: 10, // Maintain up to 10 socket connections
+      serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+      socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+      bufferCommands: false, // Disable mongoose buffering
+    });
+    console.log("✅ MongoDB Connected with optimized settings");
   } catch (err) {
     console.error("❌ MongoDB connect error:", err?.message || err);
   }
@@ -63,8 +69,11 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: ALLOWED_ORIGINS, credentials: true, methods: ["GET", "POST"] },
   transports: ["websocket", "polling"],
-  pingTimeout: 30000,
-  pingInterval: 25000,
+  pingTimeout: 20000, // Reduced from 30000
+  pingInterval: 15000, // Reduced from 25000
+  connectTimeout: 10000, // Add connection timeout
+  maxHttpBufferSize: 1e6, // Limit buffer size
+  allowEIO3: true, // Allow Engine.IO v3 for better compatibility
 });
 
 io.engine.on("connection_error", (err) => {

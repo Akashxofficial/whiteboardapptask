@@ -10,15 +10,21 @@ function Toolbar({
   onRedo,
   canUndo,
   canRedo,
+  // optional optimistic handlers from Whiteboard (if passed)
   onAddStickyNote,
   onAddRectangle,
   onAddCircle,
+  onClear,           // <-- optional clear handler
 }) {
   const handleColorChange = (color) => setTool({ ...tool, color });
   const handleWidthChange = (e) =>
-    setTool({ ...tool, width: parseInt(e.target.value, 10) });
+    setTool({ ...tool, width: parseInt(e.target.value || "1", 10) });
 
-  const clearCanvas = () => socket?.emit("clear-canvas", { roomId });
+  // Clear canvas
+  const clearCanvas = () => {
+    if (onClear) return onClear();
+    socket?.emit("clear-canvas", { roomId });
+  };
 
   // Sticky note
   const addStickyNote = () => {
@@ -26,7 +32,7 @@ function Toolbar({
     socket?.emit("shape:add", {
       roomId,
       shape: {
-        _id: crypto.randomUUID(),
+        _id: (typeof crypto !== "undefined" && crypto.randomUUID?.()) || String(Date.now()),
         type: "note",
         x: 100,
         y: 100,
@@ -45,7 +51,7 @@ function Toolbar({
     socket?.emit("shape:add", {
       roomId,
       shape: {
-        _id: crypto.randomUUID(),
+        _id: (typeof crypto !== "undefined" && crypto.randomUUID?.()) || String(Date.now()),
         type: "rect",
         x: 320,
         y: 120,
@@ -64,7 +70,7 @@ function Toolbar({
     socket?.emit("shape:add", {
       roomId,
       shape: {
-        _id: crypto.randomUUID(),
+        _id: (typeof crypto !== "undefined" && crypto.randomUUID?.()) || String(Date.now()),
         type: "ellipse",
         x: 520,
         y: 160,
@@ -120,9 +126,7 @@ function Toolbar({
 
       {/* Color */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <label>
-          <strong>Color:</strong>
-        </label>
+        <label><strong>Color:</strong></label>
         {["black", "red", "blue", "green"].map((color) => (
           <button
             key={color}
@@ -142,9 +146,7 @@ function Toolbar({
 
       {/* Width */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <label>
-          <strong>Width:</strong>
-        </label>
+        <label><strong>Width:</strong></label>
         <input
           type="range"
           min="1"
@@ -159,6 +161,7 @@ function Toolbar({
       <button
         onClick={onUndo}
         disabled={!canUndo}
+        title="Ctrl+Z"
         style={{
           padding: "6px 12px",
           backgroundColor: canUndo ? "#fff" : "#f1f1f1",
@@ -170,9 +173,11 @@ function Toolbar({
       >
         ⎌ Undo
       </button>
+
       <button
         onClick={onRedo}
         disabled={!canRedo}
+        title="Ctrl+Y"
         style={{
           padding: "6px 12px",
           backgroundColor: canRedo ? "#fff" : "#f1f1f1",
@@ -184,6 +189,7 @@ function Toolbar({
       >
         ↻ Redo
       </button>
+
       <button
         onClick={clearCanvas}
         style={{

@@ -42,12 +42,14 @@ export function setupSocket(io) {
     let currentRoom = null;
 
     /* ==================== JOIN ROOM ==================== */
-    socket.on("join-room", async (payload) => {
+    // supports: join-room("room123", ack?) OR join-room({roomId}, ack?)
+    socket.on("join-room", async (payload, ack) => {
       try {
-        // supports: join-room("room123") OR join-room({roomId})
-        const roomId =
-          typeof payload === "string" ? payload : payload?.roomId;
-        if (!roomId) return;
+        const roomId = typeof payload === "string" ? payload : payload?.roomId;
+        if (!roomId) {
+          if (typeof ack === "function") ack(false, "roomId missing");
+          return;
+        }
 
         // leave previous
         if (currentRoom) socket.leave(currentRoom);
@@ -64,10 +66,8 @@ export function setupSocket(io) {
           roomDoc = { roomId: currentRoom, shapes: [], drawingData: [] };
         }
 
-        // send initial shapes snapshot to new socket
+        // initial snapshots to the new socket
         socket.emit("shapes:init", roomDoc.shapes || []);
-
-        // send presence state snapshot to new socket
         socket.emit("presence:state", toPlainPresence(R.presence));
 
         // replay full strokes to the new joiner
@@ -78,10 +78,19 @@ export function setupSocket(io) {
           socket.emit("drawing:replay", { roomId: currentRoom, strokes });
         }
 
-        // broadcast user count
+        // let just-joined client know explicitly
+        socket.emit("room:joined", {
+          roomId: currentRoom,
+          users: userCount(io, currentRoom),
+        });
+
+        // broadcast user count to room
         io.to(currentRoom).emit("user-count", userCount(io, currentRoom));
+
+        if (typeof ack === "function") ack(true);
       } catch (e) {
         console.error("join-room error:", e);
+        if (typeof ack === "function") ack(false, "Failed to join room");
         socket.emit("error", { msg: "Failed to join room" });
       }
     });
@@ -192,25 +201,58 @@ export function setupSocket(io) {
       }
     });
 
-    // collaborative undo for last stroke by this author
-    socket.on("drawing:undo", async ({ roomId }) => {
+    // ---- UNDO/REDO for drawing ----
+    // Single handler: if id provided -> remove that id; else remove last (prefer same author)
+    socket.on("drawing:undo", async ({ roomId, id }) => {
       try {
         if (!roomId) return;
         const rid = String(roomId);
         const doc = await Room.findOne({ roomId: rid }, { drawingData: 1 }).lean();
         if (!doc || !Array.isArray(doc.drawingData)) return;
-        const arr = [...doc.drawingData];
-        let idx = -1;
-        for (let i = arr.length - 1; i >= 0; i--) {
-          const it = arr[i];
-          if (it?.type === "stroke" && it?.data?.author ? it.data.author === socket.id : true) {
-            idx = i;
-            break;
+
+        let arr = [...doc.drawingData];
+        let changed = false;
+
+        if (id) {
+          const beforeLen = arr.length;
+          arr = arr.filter(
+            (d) => !((d.id && d.id === id) || (d.data && d.data._id === id))
+          );
+          changed = arr.length !== beforeLen;
+        } else {
+          // remove last stroke; prefer authored by this socket if available
+          let idx = -1;
+          for (let i = arr.length - 1; i >= 0; i--) {
+            const it = arr[i];
+            if (it?.type !== "stroke") continue;
+            const authored =
+              it?.data?.author ? it.data.author === socket.id : true;
+            if (authored) {
+              idx = i;
+              break;
+            }
+          }
+          if (idx === -1) {
+            // fallback: remove last stroke of any author
+            for (let i = arr.length - 1; i >= 0; i--) {
+              if (arr[i]?.type === "stroke") {
+                idx = i;
+                break;
+              }
+            }
+          }
+          if (idx !== -1) {
+            arr.splice(idx, 1);
+            changed = true;
           }
         }
-        if (idx === -1) return;
-        arr.splice(idx, 1);
-        await Room.updateOne({ roomId: rid }, { $set: { drawingData: arr }, $currentDate: { lastActivity: true } });
+
+        if (!changed) return;
+
+        await Room.updateOne(
+          { roomId: rid },
+          { $set: { drawingData: arr }, $currentDate: { lastActivity: true } }
+        );
         const strokes = arr.filter((d) => d.type === "stroke").map((d) => d.data);
         io.to(rid).emit("drawing:replay", { roomId: rid, strokes });
       } catch (e) {
@@ -218,8 +260,8 @@ export function setupSocket(io) {
       }
     });
 
-    // commit stroke from client callback (idempotent add)
-    socket.on("drawing:commit", async ({ roomId, stroke }) => {
+    socket.on("drawing:redo", async ({ roomId, id, stroke }) => {
+      // convention: client re-commits the stroke it wants to redo
       try {
         if (!roomId || !stroke) return;
         const rid = String(roomId);
@@ -230,47 +272,33 @@ export function setupSocket(io) {
               drawingData: {
                 type: "stroke",
                 data: stroke,
-                id: stroke._id || undefined,
+                id: stroke._id || id || undefined,
                 timestamp: new Date(),
               },
             },
             $currentDate: { lastActivity: true },
           }
         );
-      } catch (e) {
-        console.error("drawing:commit error:", e);
-      }
-    });
-
-    // undo/redo a specific stroke by id (soft remove)
-    socket.on("drawing:undo", async ({ roomId, id }) => {
-      try {
-        if (!roomId || !id) return;
-        const rid = String(roomId);
-        // pull by nested data._id or stored id
-        await Room.updateOne(
-          { roomId: rid },
-          { $pull: { drawingData: { $or: [ { id }, { "data._id": id } ] } }, $currentDate: { lastActivity: true } }
-        );
-        io.to(rid).emit("drawing:replay:request");
-      } catch (e) {
-        console.error("drawing:undo error:", e);
-      }
-    });
-
-    socket.on("drawing:redo", async ({ roomId, id }) => {
-      // noop on server; client will re-commit with drawing:commit
-    });
-
-    // on replay request, fetch all strokes and broadcast for canvas rebuild
-    socket.on("drawing:replay:request", async () => {
-      try {
-        if (!currentRoom) return;
-        const doc = await Room.findOne({ roomId: currentRoom }).lean();
+        const doc = await Room.findOne({ roomId: rid }, { drawingData: 1 }).lean();
         const strokes = (doc?.drawingData || [])
           .filter((d) => d.type === "stroke")
           .map((d) => d.data);
-        io.to(currentRoom).emit("drawing:replay", { strokes });
+        io.to(rid).emit("drawing:replay", { roomId: rid, strokes });
+      } catch (e) {
+        console.error("drawing:redo error:", e);
+      }
+    });
+
+    // on replay request, fetch all strokes and broadcast for canvas rebuild
+    socket.on("drawing:replay:request", async ({ roomId }) => {
+      try {
+        const rid = roomId || currentRoom;
+        if (!rid) return;
+        const doc = await Room.findOne({ roomId: rid }).lean();
+        const strokes = (doc?.drawingData || [])
+          .filter((d) => d.type === "stroke")
+          .map((d) => d.data);
+        io.to(rid).emit("drawing:replay", { roomId: rid, strokes });
       } catch (e) {
         console.error("drawing:replay error:", e);
       }
@@ -279,9 +307,10 @@ export function setupSocket(io) {
     socket.on("clear-canvas", async ({ roomId }) => {
       try {
         if (!roomId) return;
-        io.to(roomId).emit("clear-canvas");
+        const rid = String(roomId);
+        io.to(rid).emit("clear-canvas");
         await Room.updateOne(
-          { roomId },
+          { roomId: rid },
           {
             $push: { drawingData: { type: "clear", timestamp: new Date() } },
             $set: { lastActivity: new Date() },
