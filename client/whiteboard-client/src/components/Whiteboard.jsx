@@ -61,26 +61,30 @@ const ShapeRenderer = memo(({
         touchAction: "none",
       }}
     >
-      {visibleShapes.map((s) => {
-        const selected = selectedIds.has(s._id);
-        return (
-          <ShapeItem
-            key={s._id}
-            shape={s}
-            selected={selected}
-            tool={tool}
-            onMouseDown={onShapeMouseDown}
-            onTouchStart={onShapeTouchStart}
-            onDelete={handleDelete}
-            onTextChange={handleTextChange}
-            onResize={onResize}
-          />
-        );
-      })}
+    {visibleShapes
+  .filter((s) => s && s._id) // <-- filter out null/invalid entries
+  .map((s) => {
+    const selected = selectedIds.has(s._id);
+    return (
+      <ShapeItem
+        key={s._id}
+        shape={s}
+        selected={selected}
+        tool={tool}
+        onMouseDown={onShapeMouseDown}
+        onTouchStart={onShapeTouchStart}
+        onDelete={handleDelete}
+        onTextChange={handleTextChange}
+        onResize={onResize}
+      />
+    );
+  })}
+
     </div>
   );
 });
 
+// Individual Shape Component - Memoized for performance
 // Individual Shape Component - Memoized for performance
 const ShapeItem = memo(({
   shape: s,
@@ -97,14 +101,81 @@ const ShapeItem = memo(({
   }, [s._id, onTextChange]);
 
   const handleDelete = useCallback((e) => {
+    e.stopPropagation();
     onDelete(e, s._id);
   }, [s._id, onDelete]);
 
-  const handleResize = useCallback((e, corner) => {
-    e.stopPropagation();
-    onResize(e, s, corner);
-  }, [s, onResize]);
+const handleResize = useCallback((e, corner) => {
+  e.stopPropagation();
+  e.preventDefault();
+  onResize(e, s, corner);
+}, [s, onResize]);
 
+
+  // ---- PATH (freehand stroke) ----
+  if (s.type === "path" && Array.isArray(s.points) && s.points.length > 0) {
+    // anchor svg at shape x,y and draw points relative to that
+    const originX = typeof s.x === "number" ? s.x : 0;
+    const originY = typeof s.y === "number" ? s.y : 0;
+    const d = s.points
+      .map((p, i) => {
+        const rx = (p.x || 0) - originX;
+        const ry = (p.y || 0) - originY;
+        return i === 0 ? `M${rx},${ry}` : `L${rx},${ry}`;
+      })
+      .join(" ");
+
+    // compute visible bbox so SVG has sensible size (fallback to 100x100)
+    const bboxW = s.w || 200;
+    const bboxH = s.h || 200;
+
+    return (
+      <svg
+        style={{
+          position: "absolute",
+          left: originX,
+          top: originY,
+          width: bboxW,
+          height: bboxH,
+          overflow: "visible",
+          pointerEvents: tool.mode === "select" ? "auto" : "none",
+        }}
+        onMouseDown={(e) => onMouseDown(e, s._id)}
+        onTouchStart={(e) => onTouchStart(e, s._id)}
+      >
+        <path
+          d={d}
+          stroke={s.color || "#111"}
+          strokeWidth={s.width || 2}
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {tool.mode === "select" && selected && (
+          <foreignObject x={0} y={0} width={40} height={24}>
+            <div xmlns="http://www.w3.org/1999/xhtml" style={{ pointerEvents: "auto" }}>
+              <button
+                onClick={handleDelete}
+                title="Delete"
+                style={{
+                  border: "none",
+                  background: "rgba(0,0,0,.06)",
+                  borderRadius: 4,
+                  padding: "2px 6px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          </foreignObject>
+        )}
+      </svg>
+    );
+  }
+
+  // ---- DEFAULT: rect / ellipse / note ----
   return (
     <div
       style={{
@@ -118,12 +189,8 @@ const ShapeItem = memo(({
           s.type === "rect" || s.type === "ellipse"
             ? `1px solid ${s.color || "#111"}`
             : "none",
-        background:
-          s.type === "note"
-            ? s.color || "#ffef8a"
-            : "transparent",
-        borderRadius:
-          s.type === "ellipse" ? "50%" : s.type === "note" ? 6 : 2,
+        background: s.type === "note" ? s.color || "#ffef8a" : "transparent",
+        borderRadius: s.type === "ellipse" ? "50%" : s.type === "note" ? 6 : 2,
         boxShadow: selected
           ? "0 0 0 2px #4c9ffe, 0 2px 6px rgba(0,0,0,.08)"
           : s.type === "note"
@@ -138,7 +205,6 @@ const ShapeItem = memo(({
       onMouseDown={(e) => onMouseDown(e, s._id)}
       onTouchStart={(e) => onTouchStart(e, s._id)}
     >
-      {/* Delete Button */}
       {tool.mode === "select" && (
         <button
           onClick={handleDelete}
@@ -153,13 +219,13 @@ const ShapeItem = memo(({
             padding: "2px 6px",
             cursor: "pointer",
             fontSize: 12,
+            pointerEvents: "auto",
           }}
         >
           ×
         </button>
       )}
 
-      {/* Sticky note text */}
       {s.type === "note" && tool.mode === "select" && (
         <textarea
           value={s.text || ""}
@@ -179,59 +245,44 @@ const ShapeItem = memo(({
         />
       )}
 
-      {/* Resize handles */}
       {selected &&
         (s.type === "rect" || s.type === "ellipse") &&
         tool.mode === "select" && (
           <>
-            <Handle
-              left={-4}
-              top={-4}
-              cursor="nwse-resize"
-              onMouseDown={(e) => handleResize(e, "nw")}
-            />
-            <Handle
-              left={s.w - 4}
-              top={-4}
-              cursor="nesw-resize"
-              onMouseDown={(e) => handleResize(e, "ne")}
-            />
-            <Handle
-              left={-4}
-              top={s.h - 4}
-              cursor="nesw-resize"
-              onMouseDown={(e) => handleResize(e, "sw")}
-            />
-            <Handle
-              left={s.w - 4}
-              top={s.h - 4}
-              cursor="nwse-resize"
-              onMouseDown={(e) => handleResize(e, "se")}
-            />
-          </>
+  <Handle left={-4} top={-4} cursor="nw-resize" onPointerDown={(e) => handleResize(e, "nw")} />
+  <Handle left={s.w - 4} top={-4} cursor="ne-resize" onPointerDown={(e) => handleResize(e, "ne")} />
+  <Handle left={-4} top={s.h - 4} cursor="sw-resize" onPointerDown={(e) => handleResize(e, "sw")} />
+  <Handle left={s.w - 4} top={s.h - 4} cursor="se-resize" onPointerDown={(e) => handleResize(e, "se")} />
+</>
+
         )}
     </div>
   );
 });
 
 // Optimized Handle Component
-const Handle = memo(({ left, top, cursor, onMouseDown }) => (
+// Optimized Handle Component (pointer events)
+const Handle = memo(({ left, top, cursor, onPointerDown }) => (
   <div
-    onMouseDown={onMouseDown}
+    onPointerDown={onPointerDown}
     style={{
       position: "absolute",
       left,
       top,
-      width: 8,
-      height: 8,
-      background: "#fff",
-      border: "1px solid #4c9ffe",
-      borderRadius: 2,
+      width: 10,
+      height: 10,
+      background: "#4c9ffe",
+      border: "2px solid #fff",
+      borderRadius: "50%",
       cursor,
       pointerEvents: "auto",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+      zIndex: 10,
+      touchAction: "none"
     }}
   />
 ));
+
 
 function Whiteboard() {
   const { roomId } = useParams();
@@ -242,9 +293,9 @@ function Whiteboard() {
   const [status, setStatus] = useState("🔴 Disconnected");
   const [isReady, setIsReady] = useState(false);
   const [shapes, setShapes] = useState([]);
-  const [isLoadingShapes, setIsLoadingShapes] = useState(false);
   const [connectionStep, setConnectionStep] = useState("Connecting...");
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [connectedUrl, setConnectedUrl] = useState(null);
   const socketRef = useRef(null); // socket connection
   const myIdRef = useRef(null);
   const dragRef = useRef(null);
@@ -253,6 +304,40 @@ function Whiteboard() {
   // mirror shapes in ref so wrappers read fresh value
   const shapesRef = useRef(shapes);
   useEffect(() => { shapesRef.current = shapes; }, [shapes]);
+
+  // Save shapes to localStorage for offline fallback
+  useEffect(() => {
+    if (shapes.length > 0) {
+      try {
+        localStorage.setItem(`wb:shapes:${roomId}`, JSON.stringify(shapes));
+      } catch (e) {
+        console.warn("Failed to save shapes to localStorage:", e);
+      }
+    }
+  }, [shapes, roomId]);
+
+  // Load shapes from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedShapes = localStorage.getItem(`wb:shapes:${roomId}`);
+      if (savedShapes && shapes.length === 0) {
+        const parsedShapes = JSON.parse(savedShapes);
+        if (Array.isArray(parsedShapes) && parsedShapes.length > 0) {
+          console.log("Loaded shapes from localStorage:", parsedShapes.length);
+          setShapes(parsedShapes);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load shapes from localStorage:", e);
+    }
+  }, [roomId]);
+
+  // Debug: Test shape synchronization
+  useEffect(() => {
+    if (shapes.length > 0) {
+      console.log("Current shapes state:", shapes.map(s => ({ id: s._id, x: s.x, y: s.y, w: s.w, h: s.h })));
+    }
+  }, [shapes]);
 
   // --- presence / cursors / activity ---
   const [presence, setPresence] = useState({});
@@ -324,129 +409,267 @@ function Whiteboard() {
 
   /* ---------------- Socket setup ---------------- */
   useEffect(() => {
-    const SOCKET_URL =
-      import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
-    const socket = io(SOCKET_URL, {
-      transports: ["websocket", "polling"],
-      upgrade: true,
-      reconnection: true,
-      reconnectionAttempts: 5, // Limit reconnection attempts
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 3000, // Reduced from 5000
-      timeout: 15000, // Reduced from 20000
-      forceNew: true,
-      autoConnect: true,
-    });
+    // Try multiple possible socket URLs
+    const possibleUrls = [
+      import.meta.env.VITE_SOCKET_URL,
+      "https://whiteboardapptask.onrender.com",
+      "http://localhost:5000",
+      "ws://localhost:5000",
+      "wss://whiteboardapptask.onrender.com"
+    ].filter(Boolean);
+
+    let socket = null;
+    let connectedUrl = null;
+
+    // Try to connect to each URL
+    const tryConnect = (urls, index = 0) => {
+      if (index >= urls.length) {
+        console.error("Failed to connect to any socket URL");
+        setStatus("🔴 Connection Failed");
+        return;
+      }
+
+      const url = urls[index];
+      console.log(`Trying to connect to socket: ${url}`);
+
+      socket = io(url, {
+        transports: ["websocket", "polling"],
+        upgrade: true,
+        reconnection: true,
+        reconnectionAttempts: 3,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 2000,
+        timeout: 10000,
+        forceNew: true,
+        autoConnect: true,
+      });
+
+      socket.on("connect", () => {
+        console.log(`✅ Connected to socket: ${url}`);
+        setConnectedUrl(url);
+        setStatus("🟢 Connected");
+        setConnectionStep("Joining room...");
+        toast.success("Connected to server!");
+      socket.emit("join-room", roomId);
+socket.emit("presence:join", );
+socket.emit("shapes:request", roomId);
+socket.emit("presence:join", {
+  roomId,
+  name: nameRef.current,
+  color: colorRef.current,
+});
+
+      });
+
+      socket.on("connect_error", (error) => {
+        console.log(`❌ Failed to connect to ${url}:`, error.message);
+        socket.disconnect();
+        // Try next URL
+        tryConnect(urls, index + 1);
+      });
+
+      socket.on("disconnect", () => {
+        console.log("Socket disconnected");
+        setStatus("🔴 Disconnected");
+        setConnectedUrl(null);
+        toast.error("Disconnected from server. Working offline.");
+      });
+    };
+
+    tryConnect(possibleUrls);
     socketRef.current = socket;
 
     // ======= emit wrapper: add/delete/clear -> optimistic + history =======
-    const performAdd = (shape) => {
-      applyLocalAdd(shape);
-      socket._emit("shape:add", { roomId, shape });
-    };
-    const performDelete = (id) => {
-      applyLocalDelete(id);
-      socket._emit("shape:delete", { roomId, id });
-    };
-    const performClear = () => {
-      setShapes([]);
-      socket._emit("clear-canvas", { roomId });
-    };
+  // capture original emit before overriding
+const origEmit = socket.emit.bind(socket);
 
-    socket._emit = socket.emit.bind(socket);
-    socket.emit = (event, payload) => {
-      if (event === "shape:add" && payload?.shape) {
-        const shape = payload.shape;
+// ======= emit wrapper: add/delete/clear -> optimistic + history =======
+const performAdd = (shape) => {
+  applyLocalAdd(shape);
+  // use origEmit to avoid re-entering the wrapper
+  origEmit("shape:add", { roomId, shape });
+};
+const performDelete = (id) => {
+  applyLocalDelete(id);
+  origEmit("shape:delete", { roomId, id });
+};
+const performClear = () => {
+  setShapes([]);
+  origEmit("clear-canvas", { roomId });
+};
+
+socket.emit = ((originalEmit) => {
+  return (event, payload) => {
+    if (event === "shape:add" && payload?.shape) {
+      const shape = payload.shape;
+      pushCmd({
+        do: () => {
+          performAdd(shape);
+        },
+        undo: () => {
+          performDelete(shape._id);
+        },
+      });
+      // optimistic local change + send network once
+      performAdd(shape);
+      return;
+    }
+    if (event === "shape:delete" && payload?.id) {
+      const snap = shapesRef.current.find((x) => x._id === payload.id);
+      if (snap) {
         pushCmd({
-          do: () => performAdd(shape),
-          undo: () => performDelete(shape._id),
-        });
-        performAdd(shape);
-        return;
-      }
-      if (event === "shape:delete" && payload?.id) {
-        const snap = shapesRef.current.find((x) => x._id === payload.id);
-        if (snap) {
-          pushCmd({
-            do: () => performDelete(snap._id),
-            undo: () => performAdd(snap),
-          });
-          performDelete(snap._id);
-          return;
-        }
-      }
-      if (event === "clear-canvas") {
-        const before = [...shapesRef.current];
-        pushCmd({
-          do: () => performClear(),
+          do: () => {
+            performDelete(snap._id);
+          },
           undo: () => {
-            setShapes(before);
-            // resync others
-            for (const sh of before) socket._emit("shape:add", { roomId, shape: sh });
+            performAdd(snap);
           },
         });
-        performClear();
+        performDelete(snap._id);
         return;
       }
-      // default passthrough
-      socket._emit(event, payload);
-    };
+    }
+    if (event === "clear-canvas") {
+      const before = [...shapesRef.current];
+      pushCmd({
+        do: () => {
+          performClear();
+        },
+        undo: () => {
+          setShapes(before);
+          // resync others using origEmit to avoid recursion
+          for (const sh of before) origEmit("shape:add", { roomId, shape: sh });
+        },
+      });
+      performClear();
+      return;
+    }
+    // default passthrough - call originalEmit (not socket.emit)
+    originalEmit.call(socket, event, payload);
+  };
+})(origEmit);
+
     // ===============================================================
 
-    const onConnect = () => {
-      myIdRef.current = socket.id;
-      setStatus("🟢 Connected");
-      setConnectionStep("Joining room...");
-      socket.emit("join-room", roomId);
-      socket.emit("presence:join", {
-        roomId,
-        name: nameRef.current,
-        color: colorRef.current,
-      });
-    };
-    const onDisconnect = () => setStatus("🔴 Disconnected");
     const onUserCount = (count) => {
       setUsers(count);
       setIsReady(true);
-      setConnectionStep("Loading content...");
-      setIsLoadingShapes(true);
-      // Request shapes lazily after room is joined
-      socket.emit("shapes:request", { roomId });
+      setConnectionStep("Room ready!");
+      setTimeout(() => setConnectionStep(""), 2000);
       toast.success(`👥 ${count} user${count > 1 ? "s" : ""} in room`);
     };
 
-    socket.on("connect", onConnect);
-    socket.on("disconnect", onDisconnect);
     socket.on("user-count", onUserCount);
 
     // shapes sync
-    const initShapes = (list) => {
-      setShapes(list || []);
-      if (list && list.length > 0) {
-        setConnectionStep("Room ready!");
-        setTimeout(() => setConnectionStep(""), 2000);
-      }
-    };
-    const added = (s) =>
-      setShapes((p) => (p.some((x) => x._id === s._id) ? p : [...p, s]));
-    const updated = ({ id, patch }) =>
-      setShapes((p) => p.map((x) => (x._id === id ? { ...x, ...patch } : x)));
-    const deleted = ({ id }) =>
-      setShapes((p) => p.filter((x) => x._id !== id));
+// shapes sync
+// shapes sync
+// replace the whole initShapes function with this
+const initShapes = (list) => {
+  console.log("Client received shapes:init:", list);
 
-    // lazy loading response
-    const onShapesLoaded = (loadedShapes) => {
-      setShapes(loadedShapes || []);
-      setIsLoadingShapes(false);
-      setConnectionStep("Room ready!");
-      setTimeout(() => setConnectionStep(""), 2000);
-    };
+  // sanitize: ensure list is array, remove falsy, ensure _id exists
+const safe = Array.isArray(list)
+  ? list.filter(Boolean).filter(s => s && s._id && s.type !== "path")
+  : [];
+setShapes(safe);
+
+
+  // clear selection for fresh joiners (prevents preselected handles)
+  setSelectedIds(new Set());
+
+  // show ready state if shapes present
+  if (safe && safe.length > 0) {
+    setConnectionStep("Room ready!");
+    setTimeout(() => setConnectionStep(""), 2000);
+  }
+};
+
+
+const added = (s) => {
+  if (!s || !s._id) {
+    console.warn("Ignored invalid shape:added payload", s);
+    return;
+  }
+  console.log("Client received shape:added:", s);
+  setShapes((p) => (p.some((x) => x && x._id === s._id) ? p : [...p, s]));
+};
+
+const updated = ({ id, patch }) => {
+  if (!id) {
+    console.warn("Ignored invalid shape:updated payload", { id, patch });
+    return;
+  }
+  console.log("Client received shape:updated:", { id, patch });
+  setShapes((p) => p.map((x) => (x && x._id === id ? { ...x, ...patch } : x)));
+};
+
+const deleted = ({ id }) => {
+  if (!id) {
+    console.warn("Ignored invalid shape:deleted payload", { id });
+    return;
+  }
+  console.log("Client received shape:deleted:", { id });
+  setShapes((p) => p.filter((x) => x && x._id !== id));
+};
+
 
     socket.on("shapes:init", initShapes);
     socket.on("shape:added", added);
     socket.on("shape:updated", updated);
     socket.on("shape:deleted", deleted);
-    socket.on("shapes:loaded", onShapesLoaded);
+    // replay strokes -> convert to path shapes for ShapeRenderer
+const onDrawingReplay = ({ roomId: rid, strokes }) => {
+  if (!Array.isArray(strokes) || strokes.length === 0) return;
+  setShapes((prev) => {
+    const ids = new Set(prev.map(s => s._id));
+    const strokeShapes = strokes.map((st) => ({
+      _id: st._id || `stroke-${Math.random().toString(36).slice(2)}`,
+      type: "path",
+      points: st.points || [],
+      color: st.color || "#111",
+      width: st.width || 2,
+      author: st.author || undefined,
+      x: st.points?.[0]?.x ?? 0,
+      y: st.points?.[0]?.y ?? 0,
+      w: st.w || 200,
+      h: st.h || 200
+    }));
+    // append only new ones
+    return [...prev, ...strokeShapes.filter(s => !ids.has(s._id))];
+  });
+};
+
+socket.off("drawing:replay", onDrawingReplay);
+
+
+
+    // replay saved freehand strokes (paths)
+socket.on("drawing:replay", ({ roomId: rid, strokes }) => {
+  if (!Array.isArray(strokes) || strokes.length === 0) return;
+  console.log("Client received drawing:replay ->", strokes.length, "strokes");
+
+  setShapes((prev) => {
+    const existing = new Set(prev.map((p) => p._id));
+    const newPaths = strokes.map((st) => {
+      const id = st._id || st.id || `path-${Date.now()}-${Math.random()}`;
+      return {
+        _id: id,
+        type: "path",
+        points: st.points || [],
+        color: st.color || "#111",
+        width: st.width || 2,
+        x: st.x ?? (st.points?.[0]?.x ?? 0),
+        y: st.y ?? (st.points?.[0]?.y ?? 0),
+        w: st.w || 200,
+        h: st.h || 200,
+        author: st.author || null,
+      };
+    }).filter((p) => !existing.has(p._id));
+
+    return newPaths.length ? [...prev, ...newPaths] : prev;
+  });
+});
 
     // clear-canvas broadcast from others
     socket.on("clear-canvas", () => setShapes([]));
@@ -482,6 +705,11 @@ function Whiteboard() {
     };
     socket.on("camera:update", onCam);
 
+    // Test event handler
+    socket.on("test-pong", ({ roomId, timestamp, serverTime }) => {
+      console.log("Received test-pong:", { roomId, timestamp, serverTime, roundTrip: Date.now() - timestamp });
+    });
+
     const handleBeforeUnload = () => {
       try {
         socket.disconnect();
@@ -491,19 +719,23 @@ function Whiteboard() {
 
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
-      socket.off("connect", onConnect);
-      socket.off("disconnect", onDisconnect);
-      socket.off("user-count", onUserCount);
-      socket.off("shapes:init", initShapes);
-      socket.off("shape:added", added);
-      socket.off("shape:updated", updated);
-      socket.off("shape:deleted", deleted);
-      socket.off("presence:state", onPresenceState);
-      socket.off("presence:update", onPresenceUpdate);
-      socket.off("presence:leave", onPresenceLeave);
-      socket.off("activity:update", onAct);
-      socket.off("camera:update", onCam);
-      socket.off("clear-canvas");
+      if (socket) {
+        socket.off("user-count", onUserCount);
+        socket.off("shapes:init", initShapes);
+        socket.off("drawing:replay", onDrawingReplay);
+
+        socket.off("shape:added", added);
+        socket.off("shape:updated", updated);
+        socket.off("shape:deleted", deleted);
+        socket.off("presence:state", onPresenceState);
+        socket.off("presence:update", onPresenceUpdate);
+        socket.off("presence:leave", onPresenceLeave);
+        socket.off("activity:update", onAct);
+        socket.off("camera:update", onCam);
+        socket.off("test-pong");
+        socket.off("clear-canvas");
+        socket.disconnect();
+      }
     };
   }, [roomId]);
 
@@ -580,18 +812,26 @@ function Whiteboard() {
           const before = { x: o.x, y: o.y };
           const after = { x: o.x + dx, y: o.y + dy };
 
-          // optimistic local + emit
+          // Final sync to ensure consistency (real-time sync was already happening)
           applyLocalUpdate(id, after);
-          socketRef.current?.emit("shape:update", { roomId, id, patch: after });
+          if (socketRef.current?.connected) {
+            socketRef.current.emit("shape:update", { roomId, id, patch: after });
+          } else {
+            console.warn("Socket not connected, cannot emit final shape move update");
+          }
 
           pushCmd({
             do: () => {
               applyLocalUpdate(id, after);
-              socketRef.current?.emit("shape:update", { roomId, id, patch: after });
+              if (socketRef.current?.connected) {
+                socketRef.current.emit("shape:update", { roomId, id, patch: after });
+              }
             },
             undo: () => {
               applyLocalUpdate(id, before);
-              socketRef.current?.emit("shape:update", { roomId, id, patch: before });
+              if (socketRef.current?.connected) {
+                socketRef.current.emit("shape:update", { roomId, id, patch: before });
+              }
             },
           });
         });
@@ -602,50 +842,77 @@ function Whiteboard() {
         const before = d.orig;
         const after = { x: s.x, y: s.y, w: s.w, h: s.h };
 
+        // Apply local update first for immediate feedback
         applyLocalUpdate(s._id, after);
-        socketRef.current?.emit("shape:update", {
-          roomId,
-          id: s._id,
-          patch: after,
-        });
 
+        // Final sync to ensure consistency (real-time sync was already happening)
+        console.log("Final shape resize sync:", { roomId, id: s._id, patch: after });
+        if (socketRef.current?.connected) {
+          socketRef.current.emit("shape:update", {
+            roomId,
+            id: s._id,
+            patch: after,
+          });
+        } else {
+          console.warn("Socket not connected, cannot emit final shape update");
+        }
+
+        // Add to undo/redo history
         pushCmd({
           do: () => {
             applyLocalUpdate(s._id, after);
-            socketRef.current?.emit("shape:update", {
-              roomId,
-              id: s._id,
-              patch: after,
-            });
+            if (socketRef.current?.connected) {
+              socketRef.current.emit("shape:update", {
+                roomId,
+                id: s._id,
+                patch: after,
+              });
+            }
           },
           undo: () => {
             applyLocalUpdate(s._id, before);
-            socketRef.current?.emit("shape:update", {
-              roomId,
-              id: s._id,
-              patch: before,
-            });
+            if (socketRef.current?.connected) {
+              socketRef.current.emit("shape:update", {
+                roomId,
+                id: s._id,
+                patch: before,
+              });
+            }
           },
         });
       }
     }
 
-    dragRef.current = null;
-
-    // Clean up all event listeners to prevent memory leaks
+    // Clean up all event listeners FIRST, then reset dragRef
     window.removeEventListener("mousemove", onPointerMove);
     window.removeEventListener("mouseup", endMoveOrResize);
     window.removeEventListener("touchmove", onTouchMove);
     window.removeEventListener("touchend", endMoveOrResize);
     window.removeEventListener("mousemove", onResizeMove);
-  }, [shapes, roomId, applyLocalUpdate, pushCmd]);
+
+    // Reset drag state
+    dragRef.current = null;
+  }, [shapes, roomId, applyLocalUpdate, pushCmd, camera.x, camera.y, camera.scale]);
 
   /* ---------------- Drag / Touch drag (group) - OPTIMIZED ---------------- */
   const onPointerMove = useCallback((e) => {
     const d = dragRef.current;
     if (!d || d.mode !== "move") return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
+
+    // Transform mouse coordinates to account for camera scaling
+    const rect = boardRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Mouse coordinates relative to the board element
+    const boardX = e.clientX - rect.left;
+    const boardY = e.clientY - rect.top;
+
+    // Transform to world coordinates (inverse of camera transform)
+    const worldX = (boardX - camera.x) / camera.scale;
+    const worldY = (boardY - camera.y) / camera.scale;
+
+    const dx = worldX - d.startX;
+    const dy = worldY - d.startY;
     d.last = { dx, dy };
 
     setShapes((prev) =>
@@ -655,7 +922,31 @@ function Whiteboard() {
         return { ...s, x: o.x + dx, y: o.y + dy };
       })
     );
-  }, []);
+
+    // Real-time synchronization during move (throttled)
+    const now = Date.now();
+    if (!d.lastSync || now - d.lastSync > 120) { // Sync every 120ms for move
+      d.ids.forEach((id) => {
+        const o = d.originals.get(id);
+        if (o) {
+          const patch = { x: o.x + dx, y: o.y + dy };
+          console.log("Real-time move sync:", { id, patch, socketConnected: socketRef.current?.connected });
+
+          if (socketRef.current?.connected) {
+            console.log("Emitting shape:update for move");
+            socketRef.current.emit("shape:update", {
+              roomId,
+              id,
+              patch,
+            });
+          } else {
+            console.warn("Socket not connected during move sync");
+          }
+        }
+      });
+      d.lastSync = now;
+    }
+  }, [camera.x, camera.y, camera.scale, roomId]);
 
   const onTouchMove = useCallback((e) => {
     if (!dragRef.current) return;
@@ -663,7 +954,7 @@ function Whiteboard() {
     const t = e.touches[0];
     if (!t) return;
     onPointerMove({ clientX: t.clientX, clientY: t.clientY });
-  }, [onPointerMove]);
+  }, []);
 
   const startMovePointer = useCallback((clientX, clientY, id, withShift) => {
     if (withShift) toggleSelected(id);
@@ -671,6 +962,28 @@ function Whiteboard() {
 
     const idsToMove = new Set(isSelected(id) ? selectedIds : [id]);
     if (idsToMove.size === 0) idsToMove.add(id);
+
+    // Clean up any existing drag operation first
+    if (dragRef.current) {
+      window.removeEventListener("mousemove", onPointerMove);
+      window.removeEventListener("mouseup", endMoveOrResize);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", endMoveOrResize);
+      window.removeEventListener("mousemove", onResizeMove);
+      dragRef.current = null;
+    }
+
+    // Transform mouse coordinates to account for camera scaling
+    const rect = boardRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Mouse coordinates relative to the board element
+    const boardX = clientX - rect.left;
+    const boardY = clientY - rect.top;
+
+    // Transform to world coordinates (inverse of camera transform)
+    const startX = (boardX - camera.x) / camera.scale;
+    const startY = (boardY - camera.y) / camera.scale;
 
     const originals = new Map();
     shapes.forEach((s) => {
@@ -680,10 +993,11 @@ function Whiteboard() {
     dragRef.current = {
       mode: "move",
       ids: idsToMove,
-      startX: clientX,
-      startY: clientY,
+      startX,
+      startY,
       originals,
       last: { dx: 0, dy: 0 },
+      lastSync: 0, // For throttling real-time sync
     };
 
     // Use passive listeners for better performance
@@ -691,68 +1005,123 @@ function Whiteboard() {
     window.addEventListener("mouseup", endMoveOrResize, { passive: true });
     window.addEventListener("touchmove", onTouchMove, { passive: false });
     window.addEventListener("touchend", endMoveOrResize, { passive: true });
-  }, [shapes, selectedIds, isSelected, toggleSelected, setOnlySelected]);
+  }, [shapes, selectedIds, isSelected, toggleSelected, setOnlySelected, camera.x, camera.y, camera.scale]);
 
   /* ---------------- Resize - OPTIMIZED ---------------- */
-  const onResizeMove = useCallback((e) => {
-    const d = dragRef.current;
-    if (!d || d.mode !== "resize") return;
-    const dx = e.clientX - d.startX,
-      dy = e.clientY - d.startY;
+ const onResizeMove = useCallback((e) => {
+  const d = dragRef.current;
+  if (!d || d.mode !== "resize") return;
+  e.preventDefault();
 
-    setShapes((prev) =>
-      prev.map((s) => {
-        if (s._id !== d.id) return s;
-        let { x, y, w, h } = d.orig;
+  // if pointerId was stored, ignore other pointers
+  if (d.pointerId != null && e.pointerId != null && e.pointerId !== d.pointerId) return;
 
-        if (d.corner === "nw") {
-          x += dx;
-          y += dy;
-          w -= dx;
-          h -= dy;
-        }
-        if (d.corner === "ne") {
-          y += dy;
-          w += dx;
-          h -= dy;
-        }
-        if (d.corner === "sw") {
-          x += dx;
-          w -= dx;
-          h += dy;
-        }
-        if (d.corner === "se") {
-          w += dx;
-          h += dy;
-        }
+  const rect = boardRef.current?.getBoundingClientRect();
+  if (!rect) return;
 
-        w = Math.max(10, w);
-        h = Math.max(10, h);
+  const boardX = e.clientX - rect.left;
+  const boardY = e.clientY - rect.top;
+  const worldX = (boardX - camera.x) / camera.scale;
+  const worldY = (boardY - camera.y) / camera.scale;
+  const dx = worldX - d.startX;
+  const dy = worldY - d.startY;
 
-        if (e.shiftKey) {
-          const size = Math.max(w, h);
-          w = size;
-          h = size;
-        }
-        return { ...s, x, y, w, h };
-      })
-    );
-  }, []);
+  setShapes((prev) =>
+    prev.map((s) => {
+      if (s._id !== d.id) return s;
+      let { x, y, w, h } = d.orig;
+
+      if (d.corner === "nw") {
+        x += dx; y += dy; w -= dx; h -= dy;
+      } else if (d.corner === "ne") {
+        y += dy; w += dx; h -= dy;
+      } else if (d.corner === "sw") {
+        x += dx; w -= dx; h += dy;
+      } else if (d.corner === "se") {
+        w += dx; h += dy;
+      }
+
+      w = Math.max(10, w);
+      h = Math.max(10, h);
+
+      // keep aspect rules (same as before)
+      if (s.type === "ellipse" && !e.shiftKey) {
+        const size = Math.max(w, h); w = size; h = size;
+      } else if (s.type === "rect" && e.shiftKey) {
+        const size = Math.max(w, h); w = size; h = size;
+      }
+
+      return { ...s, x, y, w, h };
+    })
+  );
+
+  // real-time sync throttled (unchanged logic)
+  const now = Date.now();
+  if (!d.lastSync || now - d.lastSync > 150) {
+    const s = shapes.find(shape => shape._id === d.id);
+    if (s) {
+      let { x, y, w, h } = d.orig;
+      if (d.corner === "nw") { x += dx; y += dy; w -= dx; h -= dy; }
+      else if (d.corner === "ne") { y += dy; w += dx; h -= dy; }
+      else if (d.corner === "sw") { x += dx; w -= dx; h += dy; }
+      else if (d.corner === "se") { w += dx; h += dy; }
+
+      w = Math.max(10, w);
+      h = Math.max(10, h);
+
+      if (s.type === "ellipse" && !e.shiftKey) { const size = Math.max(w, h); w = size; h = size; }
+      else if (s.type === "rect" && e.shiftKey) { const size = Math.max(w, h); w = size; h = size; }
+
+      const patch = { x, y, w, h };
+      if (socketRef.current?.connected) {
+        socketRef.current.emit("shape:update", { roomId, id: d.id, patch });
+      }
+      d.lastSync = now;
+    }
+  }
+}, [camera.x, camera.y, camera.scale, shapes, roomId]);
+
 
   const startResize = useCallback((e, s, corner) => {
-    if (tool.mode !== "select") return;
-    e.stopPropagation();
-    dragRef.current = {
-      mode: "resize",
-      id: s._id,
-      corner,
-      startX: e.clientX,
-      startY: e.clientY,
-      orig: { x: s.x, y: s.y, w: s.w, h: s.h },
-    };
-    window.addEventListener("mousemove", onResizeMove, { passive: true });
-    window.addEventListener("mouseup", endMoveOrResize, { passive: true });
-  }, [tool.mode]);
+  if (tool.mode !== "select") return;
+  e.stopPropagation();
+  e.preventDefault();
+
+  // cleanup any existing drag
+  if (dragRef.current) {
+    window.removeEventListener("pointermove", onResizeMove);
+    window.removeEventListener("pointerup", endMoveOrResize);
+    window.removeEventListener("mousemove", onPointerMove);
+    window.removeEventListener("mouseup", endMoveOrResize);
+    window.removeEventListener("touchmove", onTouchMove);
+    window.removeEventListener("touchend", endMoveOrResize);
+    dragRef.current = null;
+  }
+
+  const rect = boardRef.current?.getBoundingClientRect();
+  if (!rect) return;
+
+  const boardX = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
+  const boardY = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
+  const startX = (boardX - camera.x) / camera.scale;
+  const startY = (boardY - camera.y) / camera.scale;
+
+  dragRef.current = {
+    mode: "resize",
+    id: s._id,
+    corner,
+    startX,
+    startY,
+    orig: { x: s.x, y: s.y, w: s.w, h: s.h },
+    lastSync: 0,
+    pointerId: e.pointerId ?? null,
+  };
+
+  // use pointer events for robust capture across mouse/touch/stylus
+  window.addEventListener("pointermove", onResizeMove, { passive: false });
+  window.addEventListener("pointerup", endMoveOrResize, { passive: true });
+}, [tool.mode, camera.x, camera.y, camera.scale]);
+
 
   const onShapeMouseDown = useCallback((e, id) => {
     if (tool.mode !== "select") return;
@@ -987,11 +1356,6 @@ function Whiteboard() {
         }}
       >
         <div>🔄 {connectionStep}</div>
-        {isLoadingShapes && (
-          <div style={{ fontSize: "14px", opacity: 0.8 }}>
-            Loading whiteboard content...
-          </div>
-        )}
       </div>
     );
   }
@@ -1122,6 +1486,87 @@ function Whiteboard() {
         </div>
         <div style={{ color: status.includes("🟢") ? "green" : "red" }}>
           <strong>Status:</strong> {status}
+          {connectedUrl && (
+            <span style={{ fontSize: "10px", marginLeft: "8px", color: "#666" }}>
+              ({connectedUrl})
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: "12px", color: "#666" }}>
+          <strong>Shapes:</strong> {shapes.length} |
+          <button
+            onClick={() => {
+              const testShape = {
+                _id: `test-${Date.now()}`,
+                type: "rect",
+                x: Math.random() * 500,
+                y: Math.random() * 500,
+                w: 100,
+                h: 100,
+                color: "#ff0000"
+              };
+              console.log("Creating test shape:", testShape);
+              socketRef.current?.emit("shape:add", { roomId, shape: testShape });
+            }}
+            style={{
+              marginLeft: "10px",
+              padding: "2px 8px",
+              fontSize: "11px",
+              background: "#4c9ffe",
+              color: "white",
+              border: "none",
+              borderRadius: "3px",
+              cursor: "pointer"
+            }}
+          >
+            Test Shape
+          </button>
+          <button
+            onClick={() => {
+              console.log("Socket status:", {
+                connected: socketRef.current?.connected,
+                id: socketRef.current?.id,
+                readyState: socketRef.current?.readyState
+              });
+              if (socketRef.current?.connected) {
+                socketRef.current.emit("test-ping", { roomId, timestamp: Date.now() });
+              }
+            }}
+            style={{
+              marginLeft: "5px",
+              padding: "2px 8px",
+              fontSize: "11px",
+              background: "#28a745",
+              color: "white",
+              border: "none",
+              borderRadius: "3px",
+              cursor: "pointer"
+            }}
+          >
+            Test Socket
+          </button>
+          <button
+            onClick={() => {
+              if (socketRef.current) {
+                socketRef.current.disconnect();
+                setTimeout(() => {
+                  window.location.reload();
+                }, 1000);
+              }
+            }}
+            style={{
+              marginLeft: "5px",
+              padding: "2px 8px",
+              fontSize: "11px",
+              background: "#dc3545",
+              color: "white",
+              border: "none",
+              borderRadius: "3px",
+              cursor: "pointer"
+            }}
+          >
+            Reconnect
+          </button>
         </div>
       </div>
 

@@ -95,37 +95,32 @@ export function setupSocket(io) {
       }
     });
 
-    /* ==================== PRESENCE ==================== */
-    socket.on("presence:join", ({ roomId, name, color }) => {
-      if (!roomId) return;
-      const rid = String(roomId);
-      const R = ensureRoom(rid);
-      R.presence.set(socket.id, {
-        name: name || "Guest",
-        color: color || "#4c9ffe",
-        isIdle: false,
-        lastActive: Date.now(),
-      });
-      // broadcast full presence snapshot (simple & robust)
-      io.to(rid).emit("presence:state", toPlainPresence(R.presence));
-      // also update user-count (useful when presence joins after join-room)
-      io.to(rid).emit("user-count", userCount(io, rid));
-    });
+    /* ==================== PRESENCE ==================== */// client may explicitly request the latest shapes (fallback if join missed it)
+socket.on("shapes:request", async (payload) => {
+  try {
+    // payload may be { roomId } or just roomId string
+    const rid = payload && typeof payload === "string"
+      ? payload
+      : payload?.roomId || currentRoom;
 
-    socket.on("presence:update", ({ roomId, patch }) => {
-      if (!roomId) return;
-      const rid = String(roomId);
-      const R = ensureRoom(rid);
-      const cur = R.presence.get(socket.id) || {};
-      const merged = {
-        ...cur,
-        ...(patch || {}),
-        lastActive: patch?.lastActive ?? cur.lastActive ?? Date.now(),
-      };
-      R.presence.set(socket.id, merged);
-      // broadcast differential update to all peers
-      io.to(rid).emit("presence:update", { id: socket.id, patch: merged });
-    });
+    if (!rid) {
+      // nothing to do
+      socket.emit("shapes:init", []);
+      return;
+    }
+
+    const roomDoc = await Room.findOne({ roomId: String(rid) }).lean();
+    const shapes = Array.isArray(roomDoc?.shapes) ? roomDoc.shapes : [];
+    // send only to requester
+    socket.emit("shapes:init", shapes);
+
+    console.log(`shapes:request -> ${socket.id} (${rid}) : ${shapes.length} shapes`);
+  } catch (e) {
+    console.error("shapes:request error:", e);
+    socket.emit("shapes:init", []); // fail-safe: send empty list
+  }
+});
+
 
     /* ==================== ACTIVITY (typing/drawing) ==================== */
     // client emits: activity:update { roomId, patch: { drawing?:bool, typing?:bool } }
@@ -174,32 +169,67 @@ export function setupSocket(io) {
       socket.to(rid).emit("draw-move", data);
     });
 
-    socket.on("draw-end", async (data) => {
-      try {
-        const rid = data?.roomId;
-        if (!rid) return;
-        socket.to(rid).emit("draw-end", data);
-        // persist stroke in DB (complete stroke payload)
-        if (data?.stroke) {
-          await Room.updateOne(
-            { roomId: rid },
-            {
-              $push: {
-                drawingData: {
-                  type: "stroke",
-                  data: data.stroke,
-                  timestamp: new Date(),
-                },
-              },
-              $set: { lastActivity: new Date() },
-            }
-          );
-        }
-      } catch (e) {
-        console.error("draw-end error:", e);
-        socket.emit("error", { msg: "Failed to save stroke" });
+// FREE DRAW: store stroke and also convert to a "path" shape so ShapeRenderer shows it
+socket.on("draw-end", async (data) => {
+  try {
+    const rid = data?.roomId;
+    if (!rid) return;
+
+    // broadcast stroke to other connected clients immediately
+    socket.to(rid).emit("draw-end", data);
+
+    if (!data?.stroke) return;
+
+    // ensure stroke has id
+    if (!data.stroke._id) data.stroke._id = uuid();
+
+    // persist stroke into drawingData array
+   await Room.updateOne(
+  { roomId: rid },
+  {
+    $push: {
+      drawingData: {
+        type: "stroke",
+        data: data.stroke,
+        timestamp: new Date(),
       }
-    });
+    },
+    $set: { lastActivity: new Date() },
+  },
+  { upsert: true }
+);
+
+
+    // also convert stroke -> lightweight shape so new joiners get it with shapes:init
+    const strokeShape = {
+      _id: data.stroke._id,
+      type: "path",
+      points: data.stroke.points || [],
+      color: data.stroke.color || "#111",
+      width: data.stroke.width || 2,
+      author: data.stroke.author || socket.id,
+      // optional bbox; front-end can fallback if missing
+      x: data.stroke.points?.[0]?.x ?? 0,
+      y: data.stroke.points?.[0]?.y ?? 0,
+      w: data.stroke.w || 200,
+      h: data.stroke.h || 200,
+    };
+
+    await Room.updateOne(
+      { roomId: rid },
+      { $push: { shapes: strokeShape }, $set: { lastActivity: new Date() } },
+      { upsert: true }
+    );
+
+    // broadcast shape to everyone (including just-joined)
+    io.to(rid).emit("shape:added", strokeShape);
+  } catch (e) {
+    console.error("draw-end error:", e);
+    socket.emit("error", { msg: "Failed to save stroke" });
+  }
+});
+
+
 
     // ---- UNDO/REDO for drawing ----
     // Single handler: if id provided -> remove that id; else remove last (prefer same author)
@@ -322,6 +352,12 @@ export function setupSocket(io) {
       }
     });
 
+    /* ==================== TEST EVENT ==================== */
+    socket.on("test-ping", ({ roomId, timestamp }) => {
+      console.log("Received test-ping:", { roomId, timestamp, socketId: socket.id });
+      socket.emit("test-pong", { roomId, timestamp, serverTime: Date.now() });
+    });
+
     /* ==================== SHAPES CRUD ==================== */
     socket.on("shape:add", async ({ roomId, shape }) => {
       try {
@@ -343,20 +379,50 @@ export function setupSocket(io) {
 
     socket.on("shape:update", async ({ roomId, id, patch }) => {
       try {
-        if (!roomId || !id || !patch) return;
+        if (!roomId || !id || !patch) {
+          console.log("Missing required parameters:", { roomId, id, patch });
+          return;
+        }
         const rid = String(roomId);
+
+        console.log("Server received shape update:", { roomId: rid, id, patch });
+
+        // First, let's find the room and shape to verify it exists
+        const roomDoc = await Room.findOne({ roomId: rid }).lean();
+        if (!roomDoc) {
+          console.log("Room not found:", rid);
+          return;
+        }
+
+        const shapeIndex = roomDoc.shapes?.findIndex(s => s._id === id);
+        if (shapeIndex === -1) {
+          console.log("Shape not found in room:", { roomId: rid, shapeId: id });
+          return;
+        }
+
+        console.log("Found shape at index:", shapeIndex);
 
         const setObj = {};
         for (const [k, v] of Object.entries(patch)) {
-          setObj[`shapes.$.${k}`] = v;
+          setObj[`shapes.${shapeIndex}.${k}`] = v;
         }
 
-        await Room.updateOne(
-          { roomId: rid, "shapes._id": id },
+        console.log("Update object:", setObj);
+
+        const updateResult = await Room.updateOne(
+          { roomId: rid },
           { $set: setObj, $currentDate: { lastActivity: true } }
         );
 
-        io.to(rid).emit("shape:updated", { id, patch });
+        console.log("Database update result:", updateResult);
+
+        if (updateResult.modifiedCount > 0) {
+          // Broadcast to all users in the room (including sender for consistency)
+          io.to(rid).emit("shape:updated", { id, patch });
+          console.log("Broadcasted shape update to room:", rid);
+        } else {
+          console.log("No documents were modified");
+        }
       } catch (e) {
         console.error("shape:update error:", e);
         socket.emit("error", { msg: "Failed to update shape" });

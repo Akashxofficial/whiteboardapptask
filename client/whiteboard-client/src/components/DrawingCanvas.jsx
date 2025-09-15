@@ -18,6 +18,7 @@ const DrawingCanvas = forwardRef(function DrawingCanvas(
   const dprRef = useRef(1);
   const strokeRef = useRef(null); // current stroke being collected
   const throttleRef = useRef(null); // For throttling drawing events
+  const drawingQueueRef = useRef([]); // Queue for pending drawing events
   const rectRef = useRef(null); // Cache canvas bounding rect
   const rectCacheTimeRef = useRef(0); // When rect was last cached
 
@@ -29,12 +30,33 @@ const DrawingCanvas = forwardRef(function DrawingCanvas(
   const getShapes = () => shapesProp || window.__WB_SHAPES || [];
 
   const throttledEmit = (data) => {
-    if (throttleRef.current) return;
+    // Add to queue to ensure no events are lost
+    drawingQueueRef.current.push(data);
+
+    // Use a shorter throttle interval to prevent losing drawing segments
+    if (throttleRef.current) {
+      clearTimeout(throttleRef.current);
+    }
     throttleRef.current = setTimeout(() => {
       throttleRef.current = null;
-    }, 16); // ~60fps throttling
+      // Send all queued events
+      const queue = [...drawingQueueRef.current];
+      drawingQueueRef.current = [];
+      queue.forEach(eventData => {
+        socket?.emit("draw-move", eventData);
+      });
+    }, 8); // ~120fps - faster updates for smoother drawing
+  };
 
-    socket?.emit("draw-move", data);
+  const flushDrawingQueue = () => {
+    // Send any remaining queued events
+    if (drawingQueueRef.current.length > 0) {
+      const queue = [...drawingQueueRef.current];
+      drawingQueueRef.current = [];
+      queue.forEach(eventData => {
+        socket?.emit("draw-move", eventData);
+      });
+    }
   };
 
   const pointInRect = (px, py, s) =>
@@ -262,6 +284,65 @@ const DrawingCanvas = forwardRef(function DrawingCanvas(
     socket.on("draw-move", remoteMove);
     socket.on("draw-end", remoteEnd);
     socket.on("clear-canvas", onClear);
+// ----- add this directly after socket.on("clear-canvas", onClear); -----
+const replayDrawing = ({ strokes }) => {
+  const ctx = ctxRef.current;
+  if (!ctx || !Array.isArray(strokes)) return;
+
+  for (const s of strokes) {
+    try {
+      if (!s) continue;
+
+      // format A: full stroke with points array
+      if (Array.isArray(s.points) && s.points.length > 0) {
+        const pts = s.points;
+        beginStroke(ctx, pts[0].x, pts[0].y, s.color || "#111", s.width || 2, s.mask || null);
+        for (let i = 1; i < pts.length; i++) {
+          drawSegment(ctx, pts[i-1].x, pts[i-1].y, pts[i].x, pts[i].y, s.color || "#111", s.width || 2);
+        }
+        finishStroke();
+        continue;
+      }
+
+      // format B: small segments (x0,y0,x1,y1)
+      if (s.x0 != null && s.x1 != null) {
+        beginStroke(ctx, s.x0, s.y0, s.color || "#111", s.width || 2, s.mask || null);
+        drawSegment(ctx, s.x0, s.y0, s.x1, s.y1, s.color || "#111", s.width || 2);
+        finishStroke();
+        continue;
+      }
+    } catch (err) {
+      console.warn("replayDrawing error for stroke", err);
+    }
+  }
+};
+
+    socket.on("drawing:replay", replayDrawing);
+    // replay strokes (server already emits this on join, but add safe handler)
+const handleDrawingReplay = ({ roomId: rid, strokes }) => {
+  if (!Array.isArray(strokes) || strokes.length === 0) return;
+  // convert strokes -> shapes (same convention server uses)
+  const shapesFromStrokes = strokes.map(stroke => ({
+    _id: stroke._id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type: "path",
+    points: stroke.points || stroke.pointsArray || [], // adapt to your stroke format
+    color: stroke.color || "#111",
+    width: stroke.width || 2,
+    author: stroke.author || null,
+    // optional: bounding box - compute or leave undefined
+  })).filter(s => Array.isArray(s.points) && s.points.length > 0);
+
+  // merge into current shapes (avoid dupes)
+  setShapes(prev => {
+    const map = new Map();
+    (prev || []).forEach(p => { if (p && p._id) map.set(p._id, p); });
+    shapesFromStrokes.forEach(s => { if (s && s._id) map.set(s._id, s); });
+    return Array.from(map.values());
+  });
+};
+
+socket.on("drawing:replay", handleDrawingReplay);
+
 
     return () => {
       socket.off("draw-start", remoteStart);
@@ -272,117 +353,119 @@ const DrawingCanvas = forwardRef(function DrawingCanvas(
   }, [socket, size.w, size.h]);
 
   // ---------- Mouse / Touch ----------
-  const onMouseDown = (e) => {
-    if (!ctxRef.current || tool?.mode !== "draw") return;
-    e.preventDefault();
-    e.stopPropagation();
+  // ---------- Pointer events (replace mouse/touch handlers) ----------
+const onPointerDown = (e) => {
+  if (!ctxRef.current || tool?.mode !== "draw") return;
+  e.preventDefault();
+  e.stopPropagation();
 
-    const { x, y } = toCanvas(e.clientX, e.clientY);
-    const shape = hitTest(x, y);
-    const mask =
-      shape && (shape.type === "rect" || shape.type === "ellipse")
-        ? { id: shape._id, type: shape.type, x: shape.x, y: shape.y, w: shape.w, h: shape.h }
-        : null;
+  // ensure pointer capture so touch/pen stays with canvas
+  try {
+    canvasRef.current?.setPointerCapture?.(e.pointerId);
+  } catch (err) {}
 
-    beginStroke(ctxRef.current, x, y, tool.color, tool.width, mask);
-    socket?.emit("draw-start", {
-      roomId,
-      stroke: { x0: x, y0: y, color: tool.color, width: tool.width, mask },
-    });
-  };
+  const { x, y } = toCanvas(e.clientX, e.clientY);
+  const shape = hitTest(x, y);
+  const mask =
+    shape && (shape.type === "rect" || shape.type === "ellipse")
+      ? { id: shape._id, type: shape.type, x: shape.x, y: shape.y, w: shape.w, h: shape.h }
+      : null;
 
-  const onMouseMove = (e) => {
-    if (!drawingRef.current || tool?.mode !== "draw" || !ctxRef.current) return;
+  beginStroke(ctxRef.current, x, y, tool.color, tool.width, mask);
 
-    const { x, y } = toCanvas(e.clientX, e.clientY);
-    const { x: x0, y: y0 } = lastRef.current;
+  // include stroke id so server can store/replay properly
+  socket?.emit("draw-start", {
+    roomId,
+    stroke: {
+      _id: strokeRef.current?._id,
+      x0: x,
+      y0: y,
+      color: tool.color,
+      width: tool.width,
+      mask,
+    },
+  });
+};
 
-    // Skip if movement is too small (reduces unnecessary drawing)
-    const dx = x - x0;
-    const dy = y - y0;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+const onPointerMove = (e) => {
+  if (!drawingRef.current || tool?.mode !== "draw" || !ctxRef.current) return;
+  e.preventDefault();
 
-    drawSegment(ctxRef.current, x0, y0, x, y, tool.color, tool.width);
+  const { x, y } = toCanvas(e.clientX, e.clientY);
+  const { x: x0, y: y0 } = lastRef.current;
 
-    if (camera) {
-      const w0 = toWorld(x0, y0);
-      const w1 = toWorld(x, y);
-      window.dispatchEvent(
-        new CustomEvent("wb:minimap-seg", { detail: { x0: w0.x, y0: w0.y, x1: w1.x, y1: w1.y, color: tool.color, width: tool.width } })
-      );
+  const dx = x - x0;
+  const dy = y - y0;
+  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+
+  drawSegment(ctxRef.current, x0, y0, x, y, tool.color, tool.width);
+
+  if (camera) {
+    const w0 = toWorld(x0, y0);
+    const w1 = toWorld(x, y);
+    window.dispatchEvent(
+      new CustomEvent("wb:minimap-seg", { detail: { x0: w0.x, y0: w0.y, x1: w1.x, y1: w1.y, color: tool.color, width: tool.width } })
+    );
+  }
+
+  lastRef.current = { x, y };
+
+  // include stroke id on move events so server can associate segments
+  const strokeId = strokeRef.current?._id;
+  throttledEmit({
+    roomId,
+    stroke: { _id: strokeId, x0, y0, x1: x, y1: y, color: tool.color, width: tool.width },
+  });
+};
+
+const onPointerUp = (e) => {
+  if (!drawingRef.current) return;
+  e.preventDefault();
+
+  // release pointer capture
+  try {
+    canvasRef.current?.releasePointerCapture?.(e.pointerId);
+  } catch (err) {}
+
+  if (throttleRef.current) {
+    clearTimeout(throttleRef.current);
+    throttleRef.current = null;
+  }
+  flushDrawingQueue();
+
+  const completed = finishStroke();
+
+  // send final last segment if possible (keeps other peers smooth)
+  if (completed && completed.points && completed.points.length > 1) {
+    const lastPoints = completed.points.slice(-2);
+    if (lastPoints.length === 2) {
+      const [prevPoint, lastPoint] = lastPoints;
+      socket?.emit("draw-move", {
+        roomId,
+        stroke: {
+          _id: completed._id,
+          x0: prevPoint.x,
+          y0: prevPoint.y,
+          x1: lastPoint.x,
+          y1: lastPoint.y,
+          color: completed.color,
+          width: completed.width,
+        },
+      });
     }
+  }
 
-    lastRef.current = { x, y };
-    throttledEmit({
-      roomId,
-      stroke: { x0, y0, x1: x, y1: y, color: tool.color, width: tool.width },
-    });
-  };
+  // final commit
+  socket?.emit("draw-end", { roomId, stroke: completed });
 
-  const onMouseUp = () => {
-    if (!drawingRef.current) return;
+  // also persist as a shape for immediate availability (undo/history)
+ // ✅ FIX: emit shape:add for undo/redo history
+if (completed) {
+  socket?.emit("shape:add", { roomId, shape: { ...completed, type: "path" } });
+}
 
-    // Clear any pending throttled emissions
-    if (throttleRef.current) {
-      clearTimeout(throttleRef.current);
-      throttleRef.current = null;
-    }
+};
 
-    const completed = finishStroke();
-    socket?.emit("draw-end", { roomId, stroke: completed });
-
-    // ✅ FIX: emit shape:add for undo/redo history
-    if (completed) {
-      socket?.emit("shape:add", { roomId, shape: { ...completed, type: "path" } });
-    }
-  };
-
-  const onTouchStart = (e) => {
-    if (!ctxRef.current || tool?.mode !== "draw") return;
-    const t = e.touches?.[0];
-    if (!t) return;
-    e.preventDefault();
-
-    const { x, y } = toCanvas(t.clientX, t.clientY);
-    const shape = hitTest(x, y);
-    const mask =
-      shape && (shape.type === "rect" || shape.type === "ellipse")
-        ? { id: shape._id, type: shape.type, x: shape.x, y: shape.y, w: shape.w, h: shape.h }
-        : null;
-
-    beginStroke(ctxRef.current, x, y, tool.color, tool.width, mask);
-    socket?.emit("draw-start", { roomId, stroke: { x0: x, y0: y, color: tool.color, width: tool.width, mask } });
-  };
-
-  const onTouchMove = (e) => {
-    if (!drawingRef.current || tool?.mode !== "draw" || !ctxRef.current) return;
-    const t = e.touches?.[0];
-    if (!t) return;
-    e.preventDefault();
-
-    const { x, y } = toCanvas(t.clientX, t.clientY);
-    const { x: x0, y: y0 } = lastRef.current;
-
-    // Skip if movement is too small (reduces unnecessary drawing)
-    const dx = x - x0;
-    const dy = y - y0;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
-
-    drawSegment(ctxRef.current, x0, y0, x, y, tool.color, tool.width);
-
-    if (camera) {
-      const w0 = toWorld(x0, y0);
-      const w1 = toWorld(x, y);
-      window.dispatchEvent(
-        new CustomEvent("wb:minimap-seg", { detail: { x0: w0.x, y0: w0.y, x1: w1.x, y1: w1.y, color: tool.color, width: tool.width } })
-      );
-    }
-
-    lastRef.current = { x, y };
-    throttledEmit({ roomId, stroke: { x0, y0, x1: x, y1: y, color: tool.color, width: tool.width } });
-  };
-
-  const onTouchEnd = () => onMouseUp();
 
   const onContextMenu = (e) => {
     if (tool?.mode === "draw") e.preventDefault();
@@ -485,13 +568,12 @@ const DrawingCanvas = forwardRef(function DrawingCanvas(
         pointerEvents: tool?.mode === "draw" ? "auto" : "none",
         touchAction: "none",
       }}
-      onMouseDown={onMouseDown}
-      onMouseMove={onMouseMove}
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseUp}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
+     onPointerDown={onPointerDown}
+onPointerMove={onPointerMove}
+onPointerUp={onPointerUp}
+onPointerCancel={onPointerUp}
+onPointerLeave={onPointerUp}
+
       onContextMenu={onContextMenu}
     />
   );
